@@ -3,7 +3,7 @@
 
 Adapted from ios-vince/tools/mkadt_vince.py for the Mi A2 Lite (daisy):
 - GICv2 Distributor @ 0x0b000000, CPU Interface @ 0x0b002000, virtual-timer-intid 20
-- Framebuffer @ 0x90001000, 1080x2280, 24-bpp RGB888, stride 3240
+- Framebuffer @ 0x90001000, HX8399C FHD+ 1080x2280, 24-bpp RGB888, stride 3240
 - Physical RAM base @ 0xa0000000 (1.5 GB contiguous upper DRAM on MSM8953)
 - SDHCI eMMC controller @ 0x07824900
 - iPhone X identity for iOS userland (display-scale 3, no-home-button)

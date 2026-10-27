@@ -3,7 +3,7 @@
 
 #define FB_BASE		0x90001000UL	/* continuous splash framebuffer for daisy/vince */
 #define FB_W		1080
-#define FB_H		2280		/* Mi A2 Lite (daisy) panel; vince is 2160 */
+#define FB_H		2280		/* HX8399C FHD+ on daisy; vince is 2160 */
 #define FB_STRIDE	(FB_W * 3)	/* 3240 bytes, RGB888 24-bpp */
 
 #define RED		0x00ff0000U
