@@ -82,11 +82,11 @@ def verify_adt(adt_path):
             i2c_addr, = struct.unpack("<I", dev_props["i2c-address"])
             i2c_bus, = struct.unpack("<I", dev_props["i2c-bus"])
             assert i2c_addr == 0x20 and i2c_bus == 3, f"Touchscreen mismatch: bus {i2c_bus}, addr 0x{i2c_addr:x}"
-            print(f"  [PASS] Synaptics RMI4 Touchscreen verified: Bus {i2c_bus}, Addr 0x{i2c_addr:x}")
+            print(f"  [PASS] Inert touch placeholder verified: Bus {i2c_bus}, Addr 0x{i2c_addr:x} (vincetouch=0)")
 
     print("[SUCCESS] All ADT verification checks passed with ZERO SWEET regressions!")
     return True
 
 if __name__ == "__main__":
-    path = sys.argv[1] if len(sys.argv) > 1 else "artifacts/vince.adt"
+    path = sys.argv[1] if len(sys.argv) > 1 else "artifacts/daisy.adt"
     verify_adt(path)
