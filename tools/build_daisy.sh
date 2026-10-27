@@ -84,7 +84,7 @@ PY
 fi
 
 echo "[*] Packing VINCEXNU payload"
-PAYLOAD_CMDLINE=${PAYLOAD_CMDLINE:-"debug=0xc serial=3 cpus=1 keepsyms=1 -enable_kprintf_spam -noprogress wdt=-1 wdt_test=no_user_checkin rd=mmcroot0 mmcrw=1 vincetouch=0 vincekeys=1"}
+PAYLOAD_CMDLINE=${PAYLOAD_CMDLINE:-"debug=0xc serial=3 cpus=1 keepsyms=1 -enable_kprintf_spam -noprogress wdt=-1 wdt_test=no_user_checkin rd=mmcroot0 mmcrw=1 rootrw=1 unentitled_ios_sim_launch=1 launchd_unsecure_cache=1 ignition_level=1 vincefix=bluetool vincetouch=0 vincekeys=1"}
 python3 "$ROOT/tools/mkpayload_vince.py" "$KERNEL" "$ADT" "$PAYLOAD" \
     --cmdline "$PAYLOAD_CMDLINE"
 

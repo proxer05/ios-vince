@@ -36,9 +36,11 @@ Use the existing vince XNU build/payload/root-image tooling, with the daisy ADT 
    the shim, packages the `VINCEXNU` payload, and writes `OUTDIR/daisy-boot.img`.
 4. `fastboot boot OUTDIR/daisy-boot.img` and watch the early console on the panel.
 
-The script's payload cmdline defaults to `rd=mmcroot0 mmcrw=1 vincetouch=0 vincekeys=1`:
-root from the `userdata` GPT partition, writes enabled, touch off, volume/power keys on.
-Change `PAYLOAD_CMDLINE` in the script if you want a different console or debug level.
+The script's payload cmdline defaults to `rd=mmcroot0 mmcrw=1 rootrw=1
+unentitled_ios_sim_launch=1 launchd_unsecure_cache=1 ignition_level=1
+vincefix=bluetool vincetouch=0 vincekeys=1`: root from the `userdata` GPT partition,
+writes enabled, iOS binaries allowed, touch off, volume/power keys on. Change
+`PAYLOAD_CMDLINE` in the script if you want a different console or debug level.
 
 The iOS root is installed into the `userdata` GPT partition, so this erases Android user
 data. Keep a backup.
