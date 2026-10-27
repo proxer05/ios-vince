@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Pack an Android boot image (header v0) for Xiaomi Redmi 5 Plus (vince)."""
+"""Pack an Android boot image (header v0) for Xiaomi Mi A2 Lite (daisy)."""
 import argparse
 import hashlib
 import os
@@ -24,7 +24,7 @@ def pack_bootimg(kernel_path, ramdisk_path, out_path, dtb_path=None, cmdline="co
         with open(dtb_path, "rb") as f:
             dtb = f.read()
 
-    # Offsets for Vince (MSM8953 / Snapdragon 625)
+    # Offsets for daisy (MSM8953 / Snapdragon 625); identical to vince
     base = 0x80000000
     kernel_addr = base + 0x00008000
     ramdisk_addr = base + 0x01000000
@@ -40,7 +40,7 @@ def pack_bootimg(kernel_path, ramdisk_path, out_path, dtb_path=None, cmdline="co
     os_version = (8 << 25) | (1 << 22)  # Android 8.1 stand-in
 
     cmdline_bytes = cmdline.encode("utf-8")[:512].ljust(512, b"\0")
-    name_bytes = b"vince-xnu".ljust(16, b"\0")
+    name_bytes = b"daisy-xnu".ljust(16, b"\0")
 
     # SHA hash over kernel, ramdisk, second
     sha = hashlib.sha1()
