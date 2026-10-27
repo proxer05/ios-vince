@@ -4,7 +4,7 @@
  * Boots Apple XNU Kernel on Qualcomm Snapdragon 625:
  * - GICv2 (QGIC2) MMIO configuration (GICD @ 0x0b000000, GICC @ 0x0b002000)
  * - 4 KiB Granule MMU Setup for Cortex-A53
- * - Continuous Splash Framebuffer @ 0x90001000 (1080x2160 ARGB8888)
+ * - Continuous Splash Framebuffer @ 0x90001000 (1080x2280 RGB888 on daisy)
  * - FDT / Ramdisk payload extraction & XNU handover
  */
 #include <stdint.h>

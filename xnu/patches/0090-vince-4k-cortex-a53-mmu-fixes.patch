@@ -379,7 +379,7 @@ index 37289cb..c8e50f2 100644
  	mov		x21, #0
  
  #if defined(VINCE)
--	/* Stage 0: white 64x32 band on Vince 1080x2160 24bpp screen (0x90001000) */
+-	/* Stage 0: white 64x32 band on daisy 1080x2280 24bpp screen (0x90001000) */
 -	MOV64	x0, (0x90001000 + 2128 * 3240)
 -	mov		w1, #0xff
 -	mov		x2, #32
@@ -395,7 +395,7 @@ index 37289cb..c8e50f2 100644
 -	subs	x2, x2, #1
 -	b.ne	Lvince_mark_row
 -	dsb		sy
-+	/* Stage 0: white 48x32 band on Vince 1080x2160 24bpp screen (0x90001000) */
++	/* Stage 0: white 48x32 band on daisy 1080x2280 24bpp screen (0x90001000) */
 +	VINCE_STAGE_MARK 0xff, 0xff, 0xff, 0
  #elif defined(SWEET)
  	/* Stage 0: white 64x32 band, no stack or page tables needed. */
@@ -429,7 +429,7 @@ index 37289cb..c8e50f2 100644
  	/*
 -	 * Splash framebuffer: one 32MB Normal-NC block at 0x90000000 in V=P L2 table.
 +	 * Splash framebuffer: 4x 2MB Normal-NC blocks (8MB total) at 0x90000000 in V=P L2 table.
-+	 * Covers 1080x2160x3 (6.998MB) from 0x90001000 to 0x906ADA00 without translation faults.
++	 * Covers 1080x2280x3 (7.39MB) from 0x90001000 to 0x9070C840 without translation faults.
  	 */
  	MOV64	x10, 0x90000000
 -	MOV64	x11, (ARM_TTE_TYPE_BLOCK | ARM_TTE_VALID | ARM_TTE_BLOCK_SH(SH_OUTER_MEMORY) | ARM_TTE_BLOCK_ATTRINDX(CACHE_ATTRINDX_WRITECOMB) | ARM_TTE_BLOCK_AF | ARM_TTE_BLOCK_PNX | ARM_TTE_BLOCK_NX)

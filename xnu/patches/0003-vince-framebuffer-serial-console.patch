@@ -12,7 +12,7 @@ index 997a4ab..db26bbe 100644
 + * vince: framebuffer "serial" console for Xiaomi Redmi 5 Plus (MSM8953).
 + * kprintf output is drawn onto the boot framebuffer described by the ADT:
 + *   reg    = <phys size>       absolute physical address (0x90001000)
-+ *   width, height              1080 x 2160
++ *   width, height              1080 x 2280
 + *   stride                     3240 bytes (24bpp RGB888)
 + * Lines wrap back to the top instead of scrolling; the line after the cursor
 + * is kept blank so the newest output is easy to find.

@@ -31,7 +31,7 @@ index a62416c..6fe9eaa 100644
 +	fPanelBpp = 4;
 +#if defined(ARM64_BOARD_CONFIG_VINCE)
 +	/*
-+	 * VINCE: LK's continuous-splash buffer is 24 bpp (bytes B, G, R; 1080x2160, stride 3240). The iOS side only
++	 * daisy: ABL/LK's continuous-splash buffer is 24 bpp (bytes B, G, R; 1080x2280, stride 3240). The iOS side only
 +	 * knows 32-bpp BGRA, so userland and the layer copies below work on a 32-bpp shadow in normal cached RAM, and
 +	 * flushPanel() packs it into the panel memory after each present.
 +	 */

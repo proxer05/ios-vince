@@ -3,7 +3,7 @@
 import sys
 import os
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "upstream", "ios-sweet", "tools"))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import adt
 
 SWEET_TRAPS = {
@@ -62,7 +62,7 @@ def verify_adt(adt_path):
             fb_reg = struct.unpack("<2Q", dev_props["reg"])
             assert fb_reg[0] != SWEET_TRAPS["sweet_fb"], "REGRESSION: clcd uses SWEET FB 0x9c000000!"
             assert fb_reg[0] == 0x90001000, f"clcd reg mismatch: 0x{fb_reg[0]:x} != 0x90001000"
-            assert w == 1080 and h == 2160, f"clcd dimensions {w}x{h} != 1080x2160"
+            assert w == 1080 and h == 2280, f"clcd dimensions {w}x{h} != 1080x2280"
             print(f"  [PASS] CLCD Framebuffer verified: 0x{fb_reg[0]:x} ({w}x{h})")
 
         elif name == "interrupt-controller":

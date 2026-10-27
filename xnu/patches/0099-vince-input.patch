@@ -33,7 +33,7 @@ index 0000000..05294a8
 + * one START..STOP transaction per message. Reports: F01 interrupt status,
 + * then F12 data1 (8 bytes per finger: type, x, y, z, wx, wy) for the first
 + * VINCE_TOUCH_FINGERS fingers; the 32-byte input FIFO limits one read to 4.
-+ * Coordinates are panel pixels (1080x2160). Proven first in the shim
++ * Coordinates are panel pixels (1080x2280). Proven first in the shim
 + * (vince-bringup/shim/touch.c). The only controller writes are the RMI4
 + * page select (0xFF).
 + *
@@ -521,7 +521,7 @@ index 0000000..05294a8
 +void
 +vince_input_start(void)
 +{
-+	int keys = 1, touch = 1;
++	int keys = 1, touch = 0;	/* daisy first boot: FT5406 not driven yet */
 +	thread_t thread;
 +
 +	if (input_started) {
@@ -592,8 +592,8 @@ index 27bc49d..52207e7 100644
   */
  #define SWEET_TOUCH_EDGE_PX 48
 +#if defined(ARM64_BOARD_CONFIG_VINCE)
-+/* vince: 1080x2160 panel showing the centered part of 1125x2436 (SweetFramebuffer.cpp) */
-+#define SWEET_TOUCH_PANEL_H 2160
++/* daisy: 1080x2280 panel showing the scaled 1125x2436 canvas (SweetFramebuffer.cpp) */
++#define SWEET_TOUCH_PANEL_H 2280
 +#else
 +#define SWEET_TOUCH_PANEL_H 2400
 +#endif

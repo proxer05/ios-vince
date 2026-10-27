@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Build the Apple Device Tree (ADT) for Xiaomi Redmi 5 Plus (vince) Qualcomm MSM8953.
+"""Build the Apple Device Tree (ADT) for Xiaomi Mi A2 Lite (daisy) Qualcomm MSM8953.
 
-Adapted from ios-sweet/tools/mkadt.py for Snapdragon 625 (MSM8953):
+Adapted from ios-vince/tools/mkadt_vince.py for the Mi A2 Lite (daisy):
 - GICv2 Distributor @ 0x0b000000, CPU Interface @ 0x0b002000, virtual-timer-intid 20
-- Framebuffer @ 0x90001000, 1080x2160, 24-bpp RGB888, stride 3240
+- Framebuffer @ 0x90001000, 1080x2280, 24-bpp RGB888, stride 3240
 - Physical RAM base @ 0xa0000000 (1.5 GB contiguous upper DRAM on MSM8953)
 - SDHCI eMMC controller @ 0x07824900
-- Synaptics RMI4 I2C touchscreen @ 0x20 on I2C-3
 - iPhone X identity for iOS userland (display-scale 3, no-home-button)
+- Touch is intentionally disabled for the first boot; daisy uses EDT FT5406 at 0x38 on I2C-3.
 """
 import hashlib
 import os
@@ -15,7 +15,7 @@ import struct
 import sys
 import argparse
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "upstream", "ios-sweet", "tools"))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import adt  # noqa: E402
 
 # Vince (MSM8953) Hardware Definitions:
@@ -32,9 +32,9 @@ SOC_BASE = 0x01000000
 GICD, GICD_SIZE = 0x0b000000, 0x1000
 GICC, GICC_SIZE = 0x0b002000, 0x1000
 
-# Framebuffer: Continuous splash left by LK (24-bit RGB888, stride 3240)
-FB, FB_SIZE = 0x90001000, 1080 * 2160 * 3
-FB_W, FB_H, FB_STRIDE = 1080, 2160, 1080 * 3
+# Framebuffer: Continuous splash left by ABL/LK (24-bit RGB888, stride 3240)
+FB, FB_SIZE = 0x90001000, 1080 * 2280 * 3
+FB_W, FB_H, FB_STRIDE = 1080, 2280, 1080 * 3
 
 # Storage: Qualcomm SDHCI eMMC 5.1 host controller
 SDHCI, SDHCI_SIZE = 0x07824900, 0x1000
@@ -134,7 +134,7 @@ def build_vince_adt(seed=None):
         ('device_type', cstr('display-subsystem')),
         ('compatible', cstr('vince,display') + cstr('sweet,display') + b'\0'),
         # IOMobileFramebuffer reads the canvas from this node: the iPhone X size AppleCLCD presents (1125x2436,
-        # 375x812 points @3x; the panel shows the centered 1080x2160 part), as sweet's ADT does.
+        # 375x812 points @3x; the daisy panel shows it scaled to 1080x2280), as sweet's ADT does.
         ('canvas-width', u32(1125)),
         ('canvas-height', u32(2436)),
     ])

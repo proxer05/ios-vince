@@ -95,7 +95,7 @@ index ccbb188..777aca4 100644
  	mov		x21, #0
  
 +#if defined(VINCE)
-+	/* Stage 0: white 64x32 band on Vince 1080x2160 24bpp screen (0x90001000) */
++	/* Stage 0: white 64x32 band on daisy 1080x2280 24bpp screen (0x90001000) */
 +	MOV64	x0, (0x90001000 + 2128 * 3240)
 +	mov		w1, #0xff
 +	mov		x2, #32
@@ -183,7 +183,7 @@ index 0000000..8f4c808
 +#if defined(VINCE)
 +#define EARLY_FB_PHYS 0x90001000ULL
 +#define EARLY_WIDTH 1080u
-+#define EARLY_HEIGHT 2160u
++#define EARLY_HEIGHT 2280u
 +#define EARLY_STRIDE 3240u
 +#define EARLY_BPP 3u
 +#else
