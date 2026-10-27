@@ -11,7 +11,8 @@ Touch is deliberately disabled.
 - **Interrupt Controller:** ARM GICv2 MMIO (Distributor: `0x0b000000`, CPU Interface: `0x0b002000`)
 - **Timer:** ARM Generic Virtual Timer (PPI 20 / INTID 20)
 - **Storage:** Qualcomm SDHCI eMMC 5.1 (`0x07824900`), GPT partition named `userdata`
-- **Touch (not enabled yet):** EDT FT5406 on I2C-3 at `0x38`, reset GPIO 64, IRQ GPIO 65
+- **Touch (not enabled yet):** two daisy variants: Goodix GT9xx on I2C-3 at `0x5d`, or
+  FocalTech FT5446/FT5435 on I2C-3 at `0x38`; both use reset GPIO 64 and IRQ GPIO 65
 - **RAM:** 4 GB variant; the shim uses the 1.5 GB upper DRAM bank at `0xa0000000`
 
 ## What Changed From Vince
@@ -19,8 +20,8 @@ Touch is deliberately disabled.
 - The XNU framebuffer driver still receives `vWidth/vHeight/vRowBytes` through the boot
   arguments, so the 24-bpp 1080x2280 panel path is otherwise unchanged.
 - Touch is optional at this stage and is not on the boot path. The vince Synaptics RMI4
-  driver is compiled but disabled by default in this branch (`vincetouch=0`); daisy has an
-  FT5406, so the vince probe would only find no device.
+  driver is compiled but disabled by default in this branch (`vincetouch=0`); daisy uses a
+  Goodix GT9xx or FocalTech FT5446/FT5435, so the vince probe would only find no device.
 
 The machine config is intentionally still named `VINCE` for the first boot. The MSM8953
 GICv2/timer/eMMC/PMIC/PSCI code is identical on daisy; renaming the board config can wait
@@ -30,16 +31,21 @@ until the first boot is confirmed.
 Use the existing vince XNU build/payload/root-image tooling, with the daisy ADT and shim:
 
 1. Build the XNU kernel with `MACHINE_CONFIG=VINCE` (the same MSM8953 config).
-2. Generate the ADT with `tools/mkadt_vince.py` (now emits 1080x2280).
-3. Package the kernel and ADT with `tools/mkpayload_vince.py`.
-4. Build the shim with `shim/build.py` (or the equivalent clang/ld.lld invocation).
-5. Pack the shim + payload into an Android boot image and `fastboot boot` it.
+2. Put the resulting `kernel.development.vince` in a path you control.
+3. Run `tools/build_daisy.sh KERNEL [OUTDIR]`. It generates the 1080x2280 ADT, builds
+   the shim, packages the `VINCEXNU` payload, and writes `OUTDIR/daisy-boot.img`.
+4. `fastboot boot OUTDIR/daisy-boot.img` and watch the early console on the panel.
+
+The script's payload cmdline defaults to `rd=mmcroot0 mmcrw=1 vincetouch=0 vincekeys=1`:
+root from the `userdata` GPT partition, writes enabled, touch off, volume/power keys on.
+Change `PAYLOAD_CMDLINE` in the script if you want a different console or debug level.
 
 The iOS root is installed into the `userdata` GPT partition, so this erases Android user
 data. Keep a backup.
 
 ## Not Yet Done
-- FT5406 touch driver (I2C-3, `0x38`, reset GPIO 64, IRQ GPIO 65)
+- daisy touch driver (Goodix GT9xx at `0x5d` or FocalTech FT5446/FT5435 at `0x38`,
+  I2C-3, reset GPIO 64, IRQ GPIO 65)
 - daisy-specific GPU zap/secure-memory address verification (same Adreno 506; CPU
   rendering is enough for first boot)
 - daisy WLAN/BT calibration and MAC handling

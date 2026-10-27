@@ -7,7 +7,9 @@ Adapted from ios-vince/tools/mkadt_vince.py for the Mi A2 Lite (daisy):
 - Physical RAM base @ 0xa0000000 (1.5 GB contiguous upper DRAM on MSM8953)
 - SDHCI eMMC controller @ 0x07824900
 - iPhone X identity for iOS userland (display-scale 3, no-home-button)
-- Touch is intentionally disabled for the first boot; daisy uses EDT FT5406 at 0x38 on I2C-3.
+- Touch is intentionally disabled for the first boot; daisy uses a Goodix GT9xx at 0x5d
+  or a FocalTech FT5446/FT5435 at 0x38 on I2C-3. The node below is an inert vince-shaped
+  placeholder and is not probed while `vincetouch=0`.
 """
 import hashlib
 import os
@@ -147,7 +149,8 @@ def build_vince_adt(seed=None):
         ('interrupts', u32(0, 123, 4)),  # SPI 123
     ])
 
-    # Synaptics RMI4 Touchscreen Node
+    # Inert vince-shaped touchscreen placeholder. Touch is disabled for the first daisy
+    # boot (`vincetouch=0`); daisy's real parts are GT9xx @ 0x5d or FT5446 @ 0x38.
     touch_node = node('touchscreen', [
         ph(),
         ('compatible', cstr('synaptics,rmi4') + b'\0'),

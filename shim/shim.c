@@ -1,5 +1,5 @@
 /*
- * Vince Boot Shim for Xiaomi Redmi 5 Plus (Qualcomm MSM8953)
+ * Daisy Boot Shim for Xiaomi Mi A2 Lite (Qualcomm MSM8953)
  *
  * Boots Apple XNU Kernel on Qualcomm Snapdragon 625:
  * - GICv2 (QGIC2) MMIO configuration (GICD @ 0x0b000000, GICC @ 0x0b002000)
@@ -114,8 +114,8 @@ void shim_main(void *fdt)
 	/* 1. Paint screen and print initial banner immediately */
 	con_clear(0x00102040); /* Deep navy slate background */
 
-	con_str("PROJECT", "iOS-SWEET -> Vince Port");
-	con_str("DEVICE",  "Redmi 5 Plus (MSM8953)");
+	con_str("PROJECT", "iOS-SWEET -> Daisy Port");
+	con_str("DEVICE",  "Mi A2 Lite (MSM8953)");
 	con_str("CPU",     "8x Cortex-A53 ARMv8.0-A");
 	con_hex("FDT",     (uintptr_t)fdt);
 
