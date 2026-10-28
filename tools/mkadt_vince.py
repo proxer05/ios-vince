@@ -105,8 +105,13 @@ def build_vince_adt(seed=None):
     ])
 
     # GICv2 interrupt controller node (named 'interrupt-controller' for pe_fiq.c)
+    # Its phandle is explicit so interrupting devices can point at it: without an
+    # "interrupt-parent" property, IODTMapOneInterrupt falls back to the device's
+    # parent node and spams "unexpected iodevicetreesupport.cpp:579" while mapping
+    # interrupts with wrong cell counts (breaks the SDHCI IRQ = no eMMC root).
+    gic_phandle = next(phandle)
     gic = node('interrupt-controller', [
-        ph(),
+        ('AAPL,phandle', u32(gic_phandle)),
         ('compatible', cstr('arm,cortex-a15-gic') + cstr('arm,gic-400') + b'\0'),
         ('reg', u64(GICD, GICD_SIZE, GICC, GICC_SIZE)),
         ('interrupt-controller', b''),
@@ -146,6 +151,7 @@ def build_vince_adt(seed=None):
         ph(),
         ('compatible', cstr('generic-sdhci') + cstr('qcom,sdhci-msm-v4') + b'\0'),
         ('reg', u64(SDHCI, SDHCI_SIZE)),
+        ('interrupt-parent', u32(gic_phandle)),
         ('interrupts', u32(0, 123, 4)),  # SPI 123
     ])
 
@@ -156,6 +162,7 @@ def build_vince_adt(seed=None):
         ('compatible', cstr('synaptics,rmi4') + b'\0'),
         ('i2c-address', u32(0x20)),
         ('i2c-bus', u32(3)),
+        ('interrupt-parent', u32(gic_phandle)),
         ('interrupts', u32(0, 65, 2)),  # GPIO 65
     ])
 

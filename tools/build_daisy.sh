@@ -50,6 +50,8 @@ PAYLOAD="$OUT/daisy.payload"
 SHIM_ELF="$OUT/shim.elf"
 SHIM_BIN="$OUT/Image"
 BOOTIMG="$OUT/daisy-boot.img"
+DTB=${DTB:-}
+KERNEL_IMAGE=$SHIM_BIN
 
 echo "[*] Generating 1080x2280 daisy ADT"
 python3 "$ROOT/tools/mkadt_vince.py" "$ADT"
@@ -83,6 +85,16 @@ print(f"    padded {path} to 0x{end:x} bytes")
 PY
 fi
 
+if [ -n "$DTB" ]; then
+    if [ ! -f "$DTB" ]; then
+        echo "error: DTB not found: $DTB" >&2
+        exit 1
+    fi
+    KERNEL_IMAGE="$OUT/Image.dtb"
+    cat "$SHIM_BIN" "$DTB" > "$KERNEL_IMAGE"
+    echo "[*] Appended daisy DTBs: $DTB ($(wc -c < "$DTB") bytes)"
+fi
+
 echo "[*] Packing VINCEXNU payload"
 PAYLOAD_CMDLINE=${PAYLOAD_CMDLINE:-"debug=0xc serial=3 cpus=1 keepsyms=1 -enable_kprintf_spam -noprogress wdt=-1 wdt_test=no_user_checkin rd=mmcroot0 mmcrw=1 rootrw=1 unentitled_ios_sim_launch=1 launchd_unsecure_cache=1 ignition_level=1 vincefix=bluetool vincetouch=0 vincekeys=1"}
 python3 "$ROOT/tools/mkpayload_vince.py" "$KERNEL" "$ADT" "$PAYLOAD" \
@@ -90,7 +102,7 @@ python3 "$ROOT/tools/mkpayload_vince.py" "$KERNEL" "$ADT" "$PAYLOAD" \
 
 echo "[*] Packing Android boot image"
 python3 "$ROOT/tools/mkbootimg_vince.py" \
-    --kernel "$SHIM_BIN" --ramdisk "$PAYLOAD" --out "$BOOTIMG" \
+    --kernel "$KERNEL_IMAGE" --ramdisk "$PAYLOAD" --out "$BOOTIMG" \
     --cmdline "console=null loop.max_part=7"
 
 echo

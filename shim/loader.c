@@ -51,6 +51,27 @@ static void copy64(uintptr_t dst, uintptr_t src, uint64_t n)
 		d[i] = s[i];
 }
 
+static uint64_t rd_cntfrq(void)
+{
+	uint64_t v;
+	__asm__ volatile("mrs %0, cntfrq_el0" : "=r"(v));
+	return v;
+}
+
+static uint64_t rd_cntvct(void)
+{
+	uint64_t v;
+	__asm__ volatile("mrs %0, cntvct_el0" : "=r"(v));
+	return v;
+}
+
+static void delay_ms(uint64_t ms)
+{
+	uint64_t t0 = rd_cntvct(), d = rd_cntfrq() / 1000 * ms;
+	while (rd_cntvct() - t0 < d)
+		__asm__ volatile("wfi");
+}
+
 static void zero64(uintptr_t dst, uint64_t n)
 {
 	volatile uint64_t *d = (volatile uint64_t *)dst;
@@ -128,13 +149,71 @@ const char *loader_boot(uintptr_t dtb)
 	uintptr_t entry_pa = p->entry_va + pa_of_va_base;
 	con_hex("ENTRY",   entry_pa);
 	con_hex("BOOTARG", ba_pa);
+
+	/*
+	 * Pre-handover diagnostics. Everything here runs before XNU and can
+	 * see (a) what ABL itself thinks DRAM is, (b) whether the pieces we
+	 * copied actually landed in DRAM, and (c) whether writes into DRAM
+	 * disappear the way they would if the physical address were wrong.
+	 *
+	 * We read back with D-cache disabled but MMU still on, so every probe
+	 * read goes straight to physical DRAM rather than a dirty cache line.
+	 */
+	con_str("PROBE", "flushing cached copy to DRAM...");
+	for (uintptr_t a = p->phys_base; a < top; a += 64)
+		__asm__ volatile("dc civac, %0" : : "r"(a) : "memory");
+	__asm__ volatile("dsb sy" ::: "memory");
+
+	/* (c) write probe just past boot_args (XNU does not start there yet) */
+	uintptr_t probe_pa = top;
+	volatile uint64_t *pw = (volatile uint64_t *)probe_pa;
+	pw[0] = 0xdeadbeefcafef00dULL;
+	pw[1] = 0x1badb00213571357ULL;
+	__asm__ volatile("dc cvac, %0" : : "r"(probe_pa) : "memory");
+	__asm__ volatile("dc cvac, %0" : : "r"(probe_pa + 8) : "memory");
+	__asm__ volatile("dsb sy" ::: "memory");
+
+	uint64_t sctlr_probe;
+	__asm__ volatile("mrs %0, sctlr_el1" : "=r"(sctlr_probe));
+	sctlr_probe &= ~(1ULL << 2);	/* D-cache off, MMU still on */
+	__asm__ volatile("msr sctlr_el1, %0; isb" : : "r"(sctlr_probe) : "memory");
+
+	uint64_t rb0 = pw[0], rb1 = pw[1];
+	con_hex("PROBE0", rb0);
+	con_hex("PROBE1", rb1);
+
+	/* (b1) what did we actually end up with at the XNU entry point? */
+	volatile const uint32_t *ep = (volatile const uint32_t *)entry_pa;
+	for (int i = 0; i < 8; i += 2) {
+		uint64_t v = ((uint64_t)ep[i] << 32) | ep[i + 1];
+		con_hex(i == 0 ? "ENTR00" : (i == 2 ? "ENTR04" : (i == 4 ? "ENTR08" : "ENTR0C")), v);
+	}
+
+	/* (b2) and in the ADT page */
+	volatile const uint32_t *ad = (volatile const uint32_t *)adt_pa;
+	uint32_t adsum = 0;
+	for (uint32_t i = 0; i < (uint32_t)(p->adt_size / 4); i++)
+		adsum += ad[i];
+	con_hex("ADTSUM", adsum);
+
+	if (rb0 == 0xdeadbeefcafef00dULL && rb1 == 0x1badb00213571357ULL)
+		con_str_color("PROBE", "DRAM readback OK, copying reached DRAM.", GREEN);
+	else {
+		con_str_color("PROBE", "DRAM READBACK FAILED - halting, photo?", RED);
+		while (1)
+			__asm__ volatile("wfi");
+	}
+
+	/* (a) the bootloader's own view of DRAM and its reservations */
+	{
+		static uint64_t membuf[2 + 15 * 2];
+		fdt_dump_memory(dtb, membuf, 64);
+	}
+
 	con_str("HANDOVER", "Flushing cache & entering XNU...");
 
-	/* Flush copied kernel code and boot_args from D-cache to physical DRAM */
-	for (uintptr_t a = p->phys_base; a < top; a += 64) {
-		__asm__ volatile("dc civac, %0" : : "r"(a) : "memory");
-	}
-	__asm__ volatile("dsb sy" ::: "memory");
+	/* 5 second grace so the reader can actually capture the probes. */
+	delay_ms(5000);
 
 	/* Disable MMU and D-cache so XNU enters with clean flat physical addressing */
 	uint64_t sctlr;
