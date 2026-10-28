@@ -1,0 +1,32 @@
+--- a/bsd/dev/vince_rootfix.c
++++ b/bsd/dev/vince_rootfix.c
+@@ -128,7 +128,9 @@
+ 	char arg[32] = "";
+ 	/* binary plist ASCII string of 18 characters: 0x5f, int8 marker 0x10, length 18 */
+ 	static const uint8_t prefix[] = { 0x5f, 0x10, 0x12 };
+-	int e1, e2, e3;
++	/* binary plist ASCII string of 20 characters: bluetoothd's ProgramArguments[0] */
++	static const uint8_t btprefix[] = { 0x5f, 0x10, 0x14 };
++	int e1, e2, e3, e4, e5;
+ 
+ 	if (!PE_parse_boot_argn("vincefix", arg, sizeof(arg)) || strcmp(arg, "bluetool") != 0) {
+ 		return;
+@@ -137,6 +139,17 @@
+ 	e2 = vf_write("/System/Library/LaunchDaemons/com.apple.BlueTool.plist", vince_bluetool_plist_orig,
+ 	    vince_bluetool_plist_orig_len, 0644);
+ 	e3 = vf_patch_string("/System/Library/xpc/launchd.plist", prefix, sizeof(prefix), "/usr/sbin/BlueTool", "/usr/sbin/vince-bt");
+-	printf("VINCE ROOTFIX: BlueTool stand-in %d, job file restored %d, launchd cache: %d replaced\n", e1, e2, e3);
++	/*
++	 * daisy: there is no Bluetooth controller bring-up yet, so bluetoothd exits on the
++	 * missing transport and launchd respawns it forever (KeepAlive SuccessfulExit=false),
++	 * filling the console. Point the job at the same stand-in under a 20-character path:
++	 * the process runs, holds the BT Mach services, answers nothing and never exits, so
++	 * there is nothing to respawn and the boot log stays readable.
++	 */
++	e4 = vf_write("/usr/sbin/vince-bt.x", vince_bluetool_bin, vince_bluetool_bin_len, 0755);
++	e5 = vf_patch_string("/System/Library/xpc/launchd.plist", btprefix, sizeof(btprefix),
++	    "/usr/sbin/bluetoothd", "/usr/sbin/vince-bt.x");
++	printf("VINCE ROOTFIX: BlueTool stand-in %d, job file restored %d, launchd cache: %d replaced; "
++	    "bluetoothd stand-in %d, cache: %d replaced\n", e1, e2, e3, e4, e5);
+ }
+ #endif /* ARM64_BOARD_CONFIG_VINCE */
