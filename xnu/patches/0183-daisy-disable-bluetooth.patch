@@ -11,7 +11,7 @@
  
  	if (!PE_parse_boot_argn("vincefix", arg, sizeof(arg)) || strcmp(arg, "bluetool") != 0) {
  		return;
-@@ -137,6 +139,17 @@
+@@ -137,8 +139,19 @@
  	e2 = vf_write("/System/Library/LaunchDaemons/com.apple.BlueTool.plist", vince_bluetool_plist_orig,
  	    vince_bluetool_plist_orig_len, 0644);
  	e3 = vf_patch_string("/System/Library/xpc/launchd.plist", prefix, sizeof(prefix), "/usr/sbin/BlueTool", "/usr/sbin/vince-bt");
@@ -20,7 +20,7 @@
 +	 * daisy: there is no Bluetooth controller bring-up yet, so bluetoothd exits on the
 +	 * missing transport and launchd respawns it forever (KeepAlive SuccessfulExit=false),
 +	 * filling the console. Point the job at the same stand-in under a 20-character path:
-+	 * the process runs, holds the BT Mach services, answers nothing and never exits, so
++	 * the process runs, holds the BT Mach services and returns placeholder replies, so
 +	 * there is nothing to respawn and the boot log stays readable.
 +	 */
 +	e4 = vf_write("/usr/sbin/vince-bt.x", vince_bluetool_bin, vince_bluetool_bin_len, 0755);
@@ -28,5 +28,7 @@
 +	    "/usr/sbin/bluetoothd", "/usr/sbin/vince-bt.x");
 +	printf("VINCE ROOTFIX: BlueTool stand-in %d, job file restored %d, launchd cache: %d replaced; "
 +	    "bluetoothd stand-in %d, cache: %d replaced\n", e1, e2, e3, e4, e5);
+ 	/* wifip2pd cannot start without an AWDL interface and its respawning held up wifid's join handling */
+ 	printf("VINCE ROOTFIX: wifip2pd stand-in %d\n", vf_write("/usr/libexec/wifip2pd", vince_p2pd_bin, vince_p2pd_bin_len, 0755));
  }
  #endif /* ARM64_BOARD_CONFIG_VINCE */

@@ -72,6 +72,20 @@ jobs:
           MAKEFLAGS: ${{ inputs.keep_going == 'false' && '' || '-k' }}
         run: bash build.sh
 
+      - name: Verify daisy Bluetooth fix in kernel
+        if: env.MACHINE_CONFIG == 'VINCE'
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          kernel = Path('dxb/fakeroot/System/Library/Kernels') / ('kernel.' + os.environ['KERNEL_CONFIG'].lower() + '.vince')
+          data = kernel.read_bytes()
+          for marker in (b'/usr/sbin/vince-bt.x', b'bluetoothd stand-in %d, cache: %d replaced'):
+              if marker not in data:
+                  raise SystemExit(f'{kernel}: missing daisy fix marker {marker!r}')
+          print(f'{kernel}: daisy Bluetooth fix present')
+          PY
+
       - name: Package build tree
         if: always()
         run: |
