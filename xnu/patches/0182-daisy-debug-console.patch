@@ -1,0 +1,42 @@
+--- a/pexpert/arm/pe_kprintf.c
++++ b/pexpert/arm/pe_kprintf.c
+@@ -49,6 +49,19 @@
+ 	if (PE_parse_boot_argn("-enable_kprintf_spam", &enable_kprintf_spam, sizeof(enable_kprintf_spam))) {
+ 		disable_kprintf_output = false;
+ 	}
++#if defined(ARM64_BOARD_CONFIG_VINCE)
++	/*
++	 * daisy: kernel printf reaches the framebuffer console, but kprintf
++	 * output is suppressed on DEVELOPMENT kernels unless -enable_kprintf_spam
++	 * is passed, and all of the useful early debugging (kernel_bootstrap
++	 * labels, IODT "unexpected" notes) is kprintf. Enable it by default;
++	 * boot-arg -disable_kprintf restores the stock behaviour.
++	 */
++	bool disable_kprintf = false;
++	if (!PE_parse_boot_argn("-disable_kprintf", &disable_kprintf, sizeof(disable_kprintf))) {
++		disable_kprintf_output = false;
++	}
++#endif
+ #endif
+ }
+ // Do this early, so other code can depend on whether kprintf is enabled.
+--- a/osfmk/kern/startup.c
++++ b/osfmk/kern/startup.c
+@@ -216,7 +216,17 @@
+ 
+ extern int serverperfmode;
+ 
++/*
++ * VINCE/daisy: kernel_bootstrap()/kernel_startup_log() print their phase
++ * labels with kprintf when startup_debug has STARTUP_DEBUG_VERBOSE set.
++ * The framebuffer console is the only debug output, so label every phase
++ * by default; boot-arg startup_debug=0 restores the stock behaviour.
++ */
++#if defined(ARM64_BOARD_CONFIG_VINCE)
++TUNABLE(startup_debug_t, startup_debug, "startup_debug", 1);
++#else
+ TUNABLE(startup_debug_t, startup_debug, "startup_debug", 0);
++#endif
+ 
+ static inline void
+ kernel_bootstrap_log(const char *message)
