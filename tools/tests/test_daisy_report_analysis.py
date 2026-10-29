@@ -5,7 +5,7 @@ import sys
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from analyze_daisy_reports import BEGIN, analyze, decode_report, summarize_issues
+from analyze_daisy_reports import BEGIN, TRACE, analyze, decode_report, summarize_issues
 
 
 IDLE = bytes.fromhex("000000" + "ff" * 60)
@@ -26,7 +26,61 @@ def capture(frames=(IDLE, DOWN, MULTI, UP, IDLE)):
     return "\n".join(lines)
 
 
+TIMING = " us7000 phase500/900/1400/2000/6900 gap200 lowaaaaaaaaaaaaaaaa"
+
+
+def traced_capture(frames=(IDLE, DOWN, MULTI, UP, IDLE)):
+    lines = capture(frames).splitlines()
+    result = []
+    for line in lines:
+        if line.startswith("DAISY REPORT: seq"):
+            line += TIMING
+        if line.startswith("DAISY REPORT: done"):
+            result.append(f"DAISY REPORT: progress ms300004 reads10000 ok10000 errors0 raw{len(frames)} us7000/7000/7000 gap200")
+        result.append(line)
+        if line == "DAISY REPORT: " + BEGIN:
+            result.append("DAISY REPORT: " + TRACE)
+    return "\n".join(result)
+
+
 class Reports(unittest.TestCase):
+    def test_trace_metadata_and_categories(self):
+        result = analyze(traced_capture())
+        self.assertEqual(result["exit_code"], 0, result)
+        timing = result["timing"]["valid"]
+        self.assertEqual(timing["total_us"], (7000, 7000, 7000))
+        self.assertEqual(timing["phase_median_us"], (500, 900, 1400, 2000, 6900))
+        self.assertEqual((timing["n"], timing["irq_change"], timing["p1_irq_change"]), (5, 5, 5))
+        self.assertEqual(result["progress"]["raw"], 5)
+        startup = b"\0" + b"\xff" * 62
+        reserved = bytes.fromhex("0000028229061e7f70c00016173030" + "ff" * 48)
+        result = analyze(traced_capture((startup, DOWN, reserved, UP)))
+        self.assertEqual(result["exit_code"], 1)
+        self.assertEqual({k: t["n"] for k, t in result["timing"].items()},
+                         {"startup_ff": 1, "reserved_event": 1, "valid": 2})
+        # A malformed sample breaks continuity, so it cannot prove a release.
+        self.assertEqual(result["samples"]["full_release"], 0)
+
+    def test_trace_corruption_rejected(self):
+        text = traced_capture()
+        for broken in (text.replace(TIMING, "", 1),
+                       text.replace(TRACE, TRACE + "\nDAISY REPORT: " + TRACE),
+                       text.replace("DAISY REPORT: " + TRACE + "\n", ""),
+                       text.replace("phase500/900", "phase900/500", 1),
+                       text.replace("gap200 low", "gap10 low", 1),
+                       text.replace("us7000 phase", "us1000 phase", 1),
+                       text.replace("lowaaaaaaaaaaaaaaaa", "lowaaaa", 1),
+                       text.replace("raw5 us", "raw4 us"),
+                       text.replace("us7000/7000/7000", "us8000/8000/8000"),
+                       text.replace("us7000/7000/7000", "us6000/6000/6000"),
+                       text.replace("gap200\nDAISY REPORT: done", "gap100\nDAISY REPORT: done"),
+                       text.replace("done ms300005 reads10000 ok10000", "done ms300005 reads10001 ok10001")):
+            with self.subTest(broken=broken[-200:]):
+                self.assertEqual(analyze(broken)["exit_code"], 1)
+        partial = analyze(text.rsplit("\n", 1)[0])
+        self.assertEqual(partial["exit_code"], 2)
+        self.assertIsNotNone(partial["progress"])
+
     def test_observed_0191_reports(self):
         # Exact device bytes from console-reports-0191.log (SHA-256 in touch plan).
         startup = bytes.fromhex("00" + "ff" * 62)  # seq1..1488, before first contact

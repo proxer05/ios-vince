@@ -1116,8 +1116,8 @@ explains the saved interval and missing five-minute completion summary; it
 does not establish a logger failure. The final logged line is complete.
 
 The analyzer accepts **204 samples structurally**: 180 with active contacts,
-24 with zero active contacts, four with two active contacts, 154 motion
-transitions between accepted samples, and 14 full-release transitions. Slots
+24 with zero active contacts, four with two active contacts, 152 motion
+transitions without crossing a malformed sample, and 14 full-release transitions. Slots
 0 and 1 are observed, with raw active-coordinate ranges X 0–1074 and
 Y 493–1985. These are observed ranges, not a replacement for the 1080×2280
 geometry or proof that all slots/edges have been exercised.
@@ -1202,3 +1202,24 @@ a simulated 12,345 us scheduling pause localized to the second record, and
 every SCL-high timeout with tracing both on and off. They retain complete-read/
 STOP publication, error cleanup, power/identity/default-off gating, and bounded
 capture checks. Hardware timing evidence is pending a new CI image and capture.
+
+GCC and Clang ASan/UBSan suites pass. CI `40957268230` builds the kernel at
+`b419648a81a236046e0ce2ad51fed4b4e46bbcb8` with `MACHINE_CONFIG=VINCE` and
+linked trace/progress marker checks.
+
+The host analyzer accepts both the original raw format and trace-v1 suffixes.
+It checks phase ordering, plausible maximum byte gaps, progress counter
+consistency, and that cumulative timing extrema encompass logged samples.
+Timing summaries retain separate structurally-valid, startup-FF,
+reserved-event and other-invalid groups, so rejecting a frame does not discard
+the timing evidence needed to diagnose it. Each group reports min/median/max
+transfer time and byte gap, phase medians and observed IRQ sample changes,
+including the second **record's** interval (not necessarily slot ID 1).
+
+All eight analyzer tests pass, including traced capture corruption, missing
+telemetry, mismatched progress, and the actual 0191 record fixtures. Motion/
+release continuity is now broken at malformed reports or transfer errors;
+replaying 0191 still rejects the same 84 startup and five event-3 samples,
+with the original 154 accepted-to-accepted motion transitions tightened to
+152 that do not cross malformed samples. No invalid report is reclassified
+as a valid contact.

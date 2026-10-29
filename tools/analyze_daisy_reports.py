@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate 0191 FT5446 raw captures; never synthesize or deliver HID events.
+"""Validate FT5446 raw captures and optional 0192 timing/IRQ observations.
 
 Exit 0: complete, error-free capture with idle/motion/multitouch/release evidence.
 Exit 1: malformed data or transport/capture failure. Exit 2: incomplete evidence.
@@ -10,11 +10,39 @@ from dataclasses import dataclass
 import hashlib
 from pathlib import Path
 import re
+import statistics
 
 
-FRAME = re.compile(r"seq(\d+) ms(\d+) irq([01])/([01]) got63 data([0-9a-f]{126})$")
+FRAME = re.compile(r"seq(\d+) ms(\d+) irq([01])/([01]) got63 data([0-9a-f]{126})"
+                   r"(?: us(\d+) phase(\d+)/(\d+)/(\d+)/(\d+)/(\d+) gap(\d+) low([0-9a-f]{16}))?$")
 DONE = re.compile(r"done ms(\d+) reads(\d+) ok(\d+) errors(\d+) raw(\d+) reason(\w+)$")
 BEGIN = "begin reg00 bytes63 interval20ms duration300000ms limit4096; no HID"
+TRACE = "trace v1 phases=addr,header,p0,p1,data low=before,byte1..63; polling unchanged"
+PROGRESS = re.compile(r"progress ms(\d+) reads(\d+) ok(\d+) errors(\d+) raw(\d+) us(\d+)/(\d+)/(\d+) gap(\d+)$")
+
+
+def decode_timing(match):
+    if match[6] is None:
+        return None
+    total, setup, header, p0, p1, data, gap = map(int, match.groups()[5:12])
+    if not 0 < setup < header < p0 < p1 < data <= total:
+        raise ValueError("non-monotonic transfer phase times")
+    if not 0 < gap <= data - setup or gap * 63 < data - setup:
+        raise ValueError("byte gap inconsistent with data phase")
+    return (total, setup, header, p0, p1, data, gap, int(match[13], 16))
+
+
+def summarize_timing(rows):
+    def spread(index):
+        values = [r[index] for r in rows]
+        return (min(values), statistics.median(values), max(values))
+    def changed(mask, shift, bits):
+        part = (mask >> shift) & ((1 << bits) - 1)
+        return part not in (0, (1 << bits) - 1)
+    return dict(n=len(rows), total_us=spread(0), gap_us=spread(6),
+                phase_median_us=tuple(statistics.median(r[i] for r in rows) for i in range(1, 6)),
+                irq_change=sum(changed(r[7], 0, 64) for r in rows),
+                p1_irq_change=sum(changed(r[7], 9, 7) for r in rows))
 
 
 @dataclass(frozen=True)
@@ -67,6 +95,8 @@ def analyze(text):
     seq_last = ms_last = raw = error_lines = 0
     begun = ended = False
     summary = None
+    traced, timings, progress = False, {}, None
+    timing_min, timing_max, gap_max = None, 0, 0
     prefix = []
     for number, line in enumerate(text.splitlines(), 1):
         if "DAISY EMMCLOG: stopped" in line or "# DAISY EMMCLOG lost" in line:
@@ -83,18 +113,39 @@ def analyze(text):
             continue
         if not begun or ended:
             issues.append(f"line {number}: record outside capture")
+        if record == TRACE:
+            if traced or raw or error_lines:
+                issues.append(f"line {number}: misplaced trace header")
+            traced = True
+            continue
         match = FRAME.fullmatch(record)
         if match:
             seq, ms, before, after = map(int, match.groups()[:4])
             raw += 1
-            if seq <= seq_last or ms < ms_last:
+            if seq <= seq_last or ms < ms_last or (progress and ms < progress["ms"]):
                 issues.append(f"line {number}: non-monotonic sequence/time")
             seq_last, ms_last = seq, ms
             data = bytes.fromhex(match[5])
+            timing = None
+            if traced != (match[6] is not None):
+                issues.append(f"line {number}: missing/unexpected byte timing")
+            try:
+                timing = decode_timing(match)
+            except ValueError as exc:
+                issues.append(f"line {number}, seq{seq}: {exc}")
+            category = "valid"
             try:
                 contacts = decode_report(data)
             except ValueError as exc:
                 issues.append(f"line {number}, seq{seq}: {exc}")
+                category = ("startup_ff" if data == b"\0" + b"\xff" * 62 else
+                            "reserved_event" if str(exc).startswith("reserved event") else "other_invalid")
+                previous = {}  # Do not infer motion/releases across a malformed report.
+            if timing is not None:
+                timings.setdefault(category, []).append(timing)
+                timing_min = timing[0] if timing_min is None else min(timing_min, timing[0])
+                timing_max, gap_max = max(timing_max, timing[0]), max(gap_max, timing[6])
+            if category != "valid":
                 continue
             samples["valid"] += 1
             samples["irq_low"] += int(not before or not after)
@@ -112,6 +163,21 @@ def analyze(text):
             points.extend(active.values())
             previous = active
             continue
+        match = PROGRESS.fullmatch(record)
+        if match:
+            p = dict(zip(("ms", "reads", "ok", "errors", "raw", "min_us", "mean_us", "max_us", "gap_us"),
+                         map(int, match.groups())))
+            if (not traced or not p["reads"] or p["ok"] + p["errors"] != p["reads"] or
+                    p["raw"] != raw or p["raw"] > p["ok"] or p["reads"] < seq_last or
+                    p["ms"] < ms_last or p["errors"] < error_lines or
+                    not 0 <= p["min_us"] <= p["mean_us"] <= p["max_us"] or
+                    p["gap_us"] > p["max_us"] or
+                    (timing_min is not None and p["min_us"] > timing_min) or
+                    p["max_us"] < timing_max or p["gap_us"] < gap_max or
+                    (progress and any(p[k] < progress[k] for k in ("ms", "reads", "ok", "errors", "raw")))):
+                issues.append(f"line {number}: inconsistent progress counters/timing")
+            progress = p
+            continue
         match = DONE.fullmatch(record)
         if match:
             summary = dict(zip(("ms", "reads", "ok", "errors", "raw"), map(int, match.groups()[:5])))
@@ -120,6 +186,7 @@ def analyze(text):
             continue
         if record.startswith("error "):
             error_lines += 1
+            previous = {}
             issues.append(f"line {number}: {record}")
         else:
             issues.append(f"line {number}: malformed/blocked capture record")
@@ -146,6 +213,12 @@ def analyze(text):
             issues.append("time-bounded capture ended before five minutes")
         if summary["reason"] == "limit" and raw != 4096:
             issues.append("frame-limit completion without 4096 raw frames")
+        if traced:
+            if progress is None:
+                missing.append("final trace progress")
+            elif (any(summary[k] != progress[k] for k in ("reads", "ok", "errors", "raw")) or
+                  summary["ms"] < progress["ms"]):
+                issues.append("final progress disagrees with completion summary")
     for key in ("idle", "active", "motion", "multitouch", "full_release"):
         if not samples[key]:
             missing.append(key)
@@ -155,7 +228,9 @@ def analyze(text):
         bounds = (min(xs), max(xs), min(ys), max(ys))
     return dict(issues=issues, missing=missing, samples=dict(samples), events=dict(events),
                 slots=sorted(slots), gestures=dict(gestures), bounds=bounds,
-                raw=raw, summary=summary, exit_code=1 if issues else 2 if missing else 0)
+                raw=raw, summary=summary, progress=progress,
+                timing={name: summarize_timing(rows) for name, rows in timings.items()},
+                exit_code=1 if issues else 2 if missing else 0)
 
 
 def summarize_issues(issues):
@@ -179,6 +254,10 @@ def main():
     print(f"Samples: {result['samples']}")
     print(f"Events (0=down, 1=up, 2=contact): {result['events']}; slots: {result['slots']}")
     print(f"Raw coordinate bounds (xmin,xmax,ymin,ymax): {result['bounds']}")
+    if result["progress"]:
+        print(f"Latest cumulative progress: {result['progress']}")
+    for category, timing in result["timing"].items():
+        print(f"Timing {category} (logged samples; min/median/max us): {timing}")
     groups = summarize_issues(result["issues"])
     for issue in groups[:20]:
         print(f"FAIL: {issue}")
