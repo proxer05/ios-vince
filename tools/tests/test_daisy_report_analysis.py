@@ -44,6 +44,17 @@ def traced_capture(frames=(IDLE, DOWN, MULTI, UP, IDLE)):
 
 
 class Reports(unittest.TestCase):
+    def test_observed_0192_count_transition(self):
+        # Exact seq497/498 from console-trace-0192-touch.log: header lagging the
+        # appearance of slot1 DOWN, then a count-consistent CONTACT frame.
+        bad = bytes.fromhex("000001813204b57fa0036214537fc0" + "ff" * 48)
+        following = bytes.fromhex("000002813204b57fa0836214537f90" + "ff" * 48)
+        with self.assertRaisesRegex(ValueError, "header count 1 != active records 2"):
+            decode_report(bad)
+        self.assertEqual([(c.slot, c.event, c.x, c.y) for c in decode_report(following)],
+                         [(0, 2, 306, 1205), (1, 2, 866, 1107)])
+        self.assertEqual(analyze(traced_capture((IDLE, bad, following, UP)))["exit_code"], 1)
+
     def test_trace_metadata_and_categories(self):
         result = analyze(traced_capture())
         self.assertEqual(result["exit_code"], 0, result)

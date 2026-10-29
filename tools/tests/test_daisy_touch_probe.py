@@ -33,6 +33,7 @@ def main():
             "0188-daisy-rpm-layout-diagnostic.patch",
             "0191-daisy-gpio-report-capture.patch",
             "0192-daisy-report-timing-irq.patch",
+            "0193-daisy-gpio-counter-delay.patch",
         ):
             subprocess.run([
                 "git", "-C", str(work), "apply", "--include=bsd/dev/vince_input.c",
@@ -72,6 +73,8 @@ def main():
             assert 0 < setup < header < p0 < p1 < data <= total
             assert 0 < gap <= data - setup
         assert "DAISY REPORT: progress " in result.stdout
+        assert "DAISY TOUCH: delay5 legacy us25/25/25 samples32" in result.stdout
+        assert "DAISY TOUCH: delay5 busy us5/5/5 samples32" in result.stdout
         print(result.stdout.splitlines()[-1])
 
 

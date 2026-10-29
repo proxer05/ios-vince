@@ -91,6 +91,7 @@ jobs:
               b'daisytouch_reports', b'DAISY REPORT: begin reg00 bytes63',
               b'DAISY REPORT: seq%u', b'DAISY REPORT: done',
               b'daisytouch_trace', b'DAISY REPORT: trace v1', b'DAISY REPORT: progress',
+              b'daisytouch_busywait', b'DAISY TOUCH: delay5',
               b'daisylog', b'DAISY EMMCLOG: saving console', b'# DAISY EMMCLOG v1',
               b'/private/var/log/daisy-console.log',
               b'VinceGPU: service started and registered', b'VinceGPUUserClient',

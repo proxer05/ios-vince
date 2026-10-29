@@ -1,0 +1,159 @@
+diff --git a/bsd/dev/vince_input.c b/bsd/dev/vince_input.c
+index 9b48208..d1bc96c 100644
+--- a/bsd/dev/vince_input.c
++++ b/bsd/dev/vince_input.c
+@@ -36,6 +36,8 @@
+  * minutes after successful RPM power and identity. Raw logging only, no HID.
+  * daisytouch_trace=1 adds per-byte timing/IRQ observations to report capture.
+  * It changes no bus delays or polling policy, and is disabled by default.
++ * daisytouch_busywait=1 uses local counter-spinning for GPIO bit delays only.
++ * Generic XNU delay() may sleep/WFE; this test avoids that timing granularity.
+  */
+ #if defined(ARM64_BOARD_CONFIG_VINCE)
+ #include <sys/param.h>
+@@ -131,7 +133,7 @@ static bool input_started;
+ static int keys_chan, touch_chan;
+ static int daisy_touch, daisy_probe;
+ static int daisy_diag, daisy_gpio, daisy_power;
+-static int daisy_rpm_diag, daisy_reports, daisy_trace;
++static int daisy_rpm_diag, daisy_reports, daisy_trace, daisy_busywait;
+ static uint32_t qup_last_bus_error, qup_last_error;
+ 
+ static uint32_t
+@@ -701,6 +703,50 @@ fts_rail_summary(void)
+ 	}
+ }
+ 
++/* GPIO-local alternative to delay(): ARM's generic path can block a thread
++ * or enter WFE (osfmk/kern/clock.c, osfmk/arm/rtclock.c), overshooting 5 us.
++ * Keep interrupts/preemption enabled; no frame-wide critical section. Long
++ * scheduling gaps remain observable in the optional per-byte timing trace.
++ */
++static void
++fts_gpio_busy_delay(unsigned usec)
++{
++	uint64_t ticks;
++	clock_interval_to_absolutetime_interval(usec, NSEC_PER_USEC, &ticks);
++	uint64_t start = mach_absolute_time();
++	while (mach_absolute_time() - start < ticks) {
++		__asm__ volatile("" ::: "memory");
++	}
++}
++
++static void
++fts_gpio_delay(unsigned usec)
++{
++	if (daisy_busywait == 1) { fts_gpio_busy_delay(usec); }
++	else { delay(usec); }
++}
++
++static void
++fts_gpio_delay_check(void)
++{
++	/* With reset held, compare both delay paths without touching the I2C bus. */
++	for (unsigned mode = 0; mode < 2; mode++) {
++		uint64_t min = ~0ull, sum = 0, max = 0;
++		for (unsigned i = 0; i < 32; i++) {
++			uint64_t start = mach_absolute_time(), ns;
++			if (mode) { fts_gpio_busy_delay(FTS_GPIO_HALF_US); }
++			else { delay(FTS_GPIO_HALF_US); }
++			absolutetime_to_nanoseconds(mach_absolute_time() - start, &ns);
++			if (ns < min) { min = ns; }
++			if (ns > max) { max = ns; }
++			sum += ns;
++		}
++		printf("DAISY TOUCH: delay5 %s us%llu/%llu/%llu samples32\n", mode ? "busy" : "legacy",
++		    (unsigned long long)(min / 1000u), (unsigned long long)(sum / 32000u),
++		    (unsigned long long)(max / 1000u));
++	}
++}
++
+ /* Open drain: preload zero before output-enable; high means input. */
+ static void
+ fts_gpio_line(unsigned pin, bool high)
+@@ -720,10 +766,10 @@ fts_gpio_scl_high(void)
+ 	fts_gpio_line(GPIO_SCL, true);
+ 	for (unsigned i = 0; i < FTS_GPIO_STRETCH_US; i++) {
+ 		if (fts_gpio_level(GPIO_SCL)) {
+-			delay(FTS_GPIO_HALF_US);
++			fts_gpio_delay(FTS_GPIO_HALF_US);
+ 			return 0;
+ 		}
+-		delay(1);
++		fts_gpio_delay(1);
+ 	}
+ 	return -4;
+ }
+@@ -732,14 +778,14 @@ static void
+ fts_gpio_scl_low(void)
+ {
+ 	fts_gpio_line(GPIO_SCL, false);
+-	delay(FTS_GPIO_HALF_US);
++	fts_gpio_delay(FTS_GPIO_HALF_US);
+ }
+ 
+ static int
+ fts_gpio_start(void)
+ {
+ 	fts_gpio_line(GPIO_SDA, true);
+-	delay(FTS_GPIO_HALF_US);
++	fts_gpio_delay(FTS_GPIO_HALF_US);
+ 	int r = fts_gpio_scl_high();
+ 	if (r) {
+ 		return r;
+@@ -748,7 +794,7 @@ fts_gpio_start(void)
+ 		return -6; /* bus not free (also checked before repeated START) */
+ 	}
+ 	fts_gpio_line(GPIO_SDA, false);
+-	delay(FTS_GPIO_HALF_US);
++	fts_gpio_delay(FTS_GPIO_HALF_US);
+ 	fts_gpio_scl_low();
+ 	return 0;
+ }
+@@ -759,10 +805,10 @@ fts_gpio_stop(void)
+ 	/* SCL may still be released after an error. Establish low first. */
+ 	fts_gpio_scl_low();
+ 	fts_gpio_line(GPIO_SDA, false);
+-	delay(FTS_GPIO_HALF_US);
++	fts_gpio_delay(FTS_GPIO_HALF_US);
+ 	int r = fts_gpio_scl_high();
+ 	fts_gpio_line(GPIO_SDA, true);
+-	delay(FTS_GPIO_HALF_US);
++	fts_gpio_delay(FTS_GPIO_HALF_US);
+ 	return r ? r : (fts_gpio_level(GPIO_SDA) ? 0 : -6);
+ }
+ 
+@@ -771,7 +817,7 @@ fts_gpio_put(uint8_t byte)
+ {
+ 	for (int bit = 7; bit >= 0; bit--) {
+ 		fts_gpio_line(GPIO_SDA, (byte >> bit) & 1u);
+-		delay(FTS_GPIO_HALF_US);
++		fts_gpio_delay(FTS_GPIO_HALF_US);
+ 		int r = fts_gpio_scl_high();
+ 		if (r) {
+ 			return r;
+@@ -802,7 +848,7 @@ fts_gpio_get(uint8_t *byte, bool ack)
+ 	}
+ 	/* ACK intermediate bytes, NACK the final byte of the single transaction. */
+ 	fts_gpio_line(GPIO_SDA, !ack);
+-	delay(FTS_GPIO_HALF_US);
++	fts_gpio_delay(FTS_GPIO_HALF_US);
+ 	int r = fts_gpio_scl_high();
+ 	fts_gpio_scl_low();
+ 	fts_gpio_line(GPIO_SDA, true);
+@@ -1105,6 +1151,7 @@ fts_gpio_probe(void)
+ 			return;
+ 		}
+ 	}
++	if (daisy_busywait == 1) { fts_gpio_delay_check(); }
+ 	in_sleep(&touch_chan, 20);
+ 	tlmm_cfg(GPIO_RST, 0, 0, 3, true, true);
+ 	in_sleep(&touch_chan, 200);
+@@ -1273,6 +1320,7 @@ vince_input_start(void)
+ 	(void)PE_parse_boot_argn("daisytouch_rpm_diag", &daisy_rpm_diag, sizeof(daisy_rpm_diag));
+ 	(void)PE_parse_boot_argn("daisytouch_reports", &daisy_reports, sizeof(daisy_reports));
+ 	(void)PE_parse_boot_argn("daisytouch_trace", &daisy_trace, sizeof(daisy_trace));
++	(void)PE_parse_boot_argn("daisytouch_busywait", &daisy_busywait, sizeof(daisy_busywait));
+ 	tlmm = ml_io_map(TLMM_PA, TLMM_SIZE);
+ 	if (!tlmm) {
+ 		printf("VINCE INPUT: TLMM mapping failed\n");

@@ -3,10 +3,10 @@
 **Current milestone (0190):** RPM L10/L6 votes and matching ACKs, enabled/ready
 rail readback, and FT5446 GPIO identity (`0x5422`, firmware `0x0c`, vendor `0x51`)
 are validated on this handset, including the 30/60-second identity repeats.
-The power evidence is in `artifacts/console-power-0190.log`. The 0191 report
-capture now contains live motion, two-contact and release samples, but five
-reserved-event records prevent a clean coherence result. Touch HID remains
-disabled while those records are investigated; see the 0191 result below.
+The power evidence is in `artifacts/console-power-0190.log`. The 0192 contact
+trace contains live motion, two-contact and release samples, but one reserved
+event and two count inconsistencies prevent a clean coherence result. A local
+GPIO delay comparison is next; touch HID remains disabled.
 
 ## Hardware identified in TWRP — 2026-10-29
 
@@ -1298,3 +1298,74 @@ asked to begin touching during boot: one-finger and two-finger ten-second holds,
 releases and slow movement within the first five minutes. The next extraction
 must use `artifacts/console-trace-0192-touch.log` to preserve this baseline.
 **Repeat hardware result pending.**
+
+### 0192 contact trace: timing suspect identified
+
+The user performed the holds/movement tests and deliberately rebooted early.
+Temporarily booted TWRP (1.768 s) and saved the complete catalog-visible file
+as `artifacts/console-trace-0192-touch.log`: **102,948 bytes**, 829 lines,
+SHA-256 `0721efdaaf3dad659f33bced586689a4ad819ad0a3f2ed3631125a0c06976fc0`.
+The last raw sample is seq699 at **41,518 ms**; the absent completion summary
+is expected after that early reboot. The contact interval is useful without
+another logging-only or five-minute idle test.
+
+Of 278 raw frames, **266 pass structural checks**: 248 active, 18 zero-active,
+125 two-contact, 200 motion transitions and seven full releases. Slots 0/1
+cover observed raw ranges X 261–1079 and Y 1097–1489. First valid contact is
+seq139 at 8,751 ms. Initial and 30-second power/rail/identity checks succeed.
+The last progress record reports 674 reads, all successful, at 40,175 ms;
+there are no reported I²C errors. Rejected frames are:
+
+- Nine initial `00` + 62 `ff` sentinel frames.
+- Seq143 at 9,003 ms: header 2, slot0 CONTACT (760,1457), then slot1 event 3
+  at (0,1484), raw second record `c00015cc0e10`.
+- Seq497 at 29,874 ms: header **1** but slot0 CONTACT (306,1205) and slot1
+  DOWN (866,1107). Seq498 has header **2** with both coordinates unchanged,
+  now both CONTACT.
+- Seq521 at 31,374 ms: header **1** but slot0 CONTACT (310,1209) and slot1
+  DOWN (885,1105). Seq522 likewise has header **2** with the same coordinates,
+  now both CONTACT.
+
+These count/record transitions support investigating report coherence around
+contact appearance. They are not grounds for accepting inconsistent frames.
+The analyzer regression includes exact seq497/498 bytes.
+
+Valid logged transfers have min/median/max **28.565/31.310/56.598 ms**, with a
+median largest byte gap of **478 us**. Sampled IRQ levels change during 251 of
+266 valid frames and within the second record's interval in 139. The event-3
+frame lasts 40.885 ms (12.491 ms before data, maximum data-byte gap 469 us).
+The count-mismatch frames last 39.921/49.374 ms, with maximum data-byte gaps
+469/11609 us. Large mid-data pauses are therefore not required for a malformed
+frame, and IRQ changes alone do not distinguish valid from invalid content.
+
+Source audit found a concrete candidate for the slow bit clock:
+`osfmk/kern/clock.c:delay()` calls `_clock_delay_until_deadline_with_leeway()`,
+which may block the thread; its spin branch calls `machine_delay_until()` in
+`osfmk/arm/rtclock.c`, which executes **WFE** before rechecking the counter.
+Thus `delay(5)` is not a guaranteed tight five-microsecond GPIO delay. This
+path is unchanged by the port's patches. The measured ~450–480 us per data
+byte warrants a GPIO-local counter-spin comparison; it does not yet prove
+that delay granularity causes the malformed reports.
+
+### 0193 opt-in GPIO counter-delay comparison
+
+`0193-daisy-gpio-counter-delay.patch` adds `daisytouch_busywait=1`. Only GPIO
+bit and stretch-poll delays use the new local absolute-counter spin. The
+configured 5 us half-period and 1 us stretch step are preserved; generic
+kernel delays, PMIC observer timing, reset sleeps and the 20 ms capture sleep
+are untouched. Interrupts and preemption stay enabled. The option defaults
+off and cannot turn touch, GPIO probing, power votes or capture on by itself.
+
+With the option selected, a reset-held check measures 32 requested 5 us waits
+using the legacy delay and 32 using the local spin, printing min/mean/max
+microseconds. It issues no I²C transactions and runs after successful power
+gating, before the established reset release/settle sequence. The existing
+per-byte trace will measure full transfers and remaining scheduling gaps.
+Layout-only diagnostics supersede this check as well as power/capture.
+
+Actual-source tests model fivefold legacy-delay rounding and confirm the
+local spin meets its requested duration without calling generic delay().
+They exercise complete traced reads, ACK/NACK/STOP failure cleanup at every
+clock phase, default-off/layout/power/identity gating and the delay comparison.
+All report validation and HID gates remain in effect; hardware comparison is
+pending the next CI kernel.

@@ -4,6 +4,7 @@ static unsigned tag_count, resets, delivered, released, limit, svc_acks;
 static unsigned sleeps[16], nsleeps, starts, qup_accesses, qup_maps;
 static bool running, nack, late_nack, stuck_bus, missing_done, bad_state;
 static int boot_vince, boot_daisy, boot_probe, boot_gpio, boot_power, boot_rpm_diag, boot_reports, boot_trace;
+static int boot_busywait;
 static unsigned capture_step_ms, capture_sleeps;
 static bool capture_change, capture_bad_id;
 static uint32_t arb_version, observer_status, observer_reg;
@@ -30,16 +31,19 @@ fresh(void)
 	running = nack = late_nack = stuck_bus = missing_done = bad_state = false;
 	boot_vince = boot_daisy = boot_probe = boot_gpio = boot_power = boot_rpm_diag = 0;
 	boot_reports = boot_trace = 0;
+	boot_busywait = 0;
 	capture_step_ms = capture_sleeps = 0;
 	capture_change = capture_bad_id = false;
 	mock_time_ns = 0;
+	mock_tick_ns = mock_delay_calls = 0;
+	mock_delay_factor = 1;
 	power_ready = power_bad_type = false;
 	power_calls = layout_calls = 0;
 	power_result = 0;
 	started_fn = NULL;
 	input_started = false;
 	daisy_touch = daisy_probe = daisy_diag = daisy_gpio = daisy_power = daisy_rpm_diag = daisy_reports = 0;
-	daisy_trace = 0;
+	daisy_trace = daisy_busywait = 0;
 	qup_last_bus_error = qup_last_error = 0;
 	qup = 1;
 	tlmm = 2;
@@ -246,6 +250,7 @@ static bool PE_parse_boot_argn(const char *key, void *p, int size)
 	else if (!strcmp(key, "daisytouch_rpm_diag")) { *out = boot_rpm_diag; }
 	else if (!strcmp(key, "daisytouch_reports")) { *out = boot_reports; }
 	else if (!strcmp(key, "daisytouch_trace")) { *out = boot_trace; }
+	else if (!strcmp(key, "daisytouch_busywait")) { *out = boot_busywait; }
 	else { return false; }
 	return true;
 }
@@ -319,7 +324,7 @@ int main(void)
 	fts_vince_crosscheck();
 	assert(qup_clk_ctl == CLK_CTL_100K && !running);
 	fresh();
-	boot_trace = boot_reports = boot_power = boot_rpm_diag = boot_gpio = boot_probe = 1; /* hints alone never turn touch on */
+	boot_busywait = boot_trace = boot_reports = boot_power = boot_rpm_diag = boot_gpio = boot_probe = 1; /* hints alone never turn touch on */
 	vince_input_start();
 	assert(starts == 0 && !power_calls);
 	fresh();
@@ -441,14 +446,15 @@ int main(void)
 	}
 	/* Layout diagnostics supersede power and identity and remain read-only. */
 	fresh(); wire_init();
-	boot_trace = boot_reports = boot_daisy = boot_gpio = boot_power = boot_rpm_diag = boot_probe = 1;
+	boot_busywait = boot_trace = boot_reports = boot_daisy = boot_gpio = boot_power = boot_rpm_diag = boot_probe = 1;
 	vince_input_start();
 	started_fn(NULL, 0);
 	assert(layout_calls == 3 && !power_calls && !wire.nbytes);
+	assert(mock_delay_calls == observer_reads); /* layout-only skips delay calibration */
 	assert(!qup_maps && !qup_accesses && wire.sda && wire.scl);
 	assert(!(gpio[GPIO_IO(GPIO_RST) / 4] & 2));
 	assert(nsleeps == 2 && sleeps[0] == 30000 && sleeps[1] == 30000);
 	test_gpio_reports();
-	puts("PASS: QUP/GPIO atomic transport, faults, power/identity gating, bounded capture, byte timing/IRQ trace, no HID");
+	puts("PASS: QUP/GPIO atomic transport, faults/gates, bounded trace, opt-in counter delays/calibration, no HID");
 	return 0;
 }

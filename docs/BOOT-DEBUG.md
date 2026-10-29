@@ -366,3 +366,14 @@ After the user confirmed readiness, reverified and temporarily booted the same
 requests touches during the first five minutes, including steady one-/two-finger
 holds. Retrieve it as `artifacts/console-trace-0192-touch.log`; see
 [the baseline result](TOUCHSCREEN-PLAN.md#0192-first-trace-complete-no-contact-interval).
+
+### 0192 contact trace saved
+
+Recovered `artifacts/console-trace-0192-touch.log` (102,948 bytes, 829 lines;
+SHA-256 `0721efdaaf3dad659f33bced586689a4ad819ad0a3f2ed3631125a0c06976fc0`).
+The user deliberately rebooted after performing the tests; the saved trace
+ends at 41.518 seconds. It has 266 structurally valid frames, including 125
+two-contact samples, and three malformed contact frames. The timing points
+to generic XNU `delay()` as a candidate for the slow GPIO bit clock; see
+[the contact analysis and 0193 comparison](TOUCHSCREEN-PLAN.md#0192-contact-trace-timing-suspect-identified).
+The phone is in temporary TWRP after collection.

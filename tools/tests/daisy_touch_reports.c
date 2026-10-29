@@ -5,6 +5,16 @@ test_gpio_reports(void)
 	uint8_t buf[65];
 	struct fts_gpio_trace timing, base;
 	unsigned stage, received, clocks = 0;
+	/* Model an event-rounded legacy delay and verify actual local counter spin. */
+	fresh(); mock_tick_ns = 100; mock_delay_factor = 5;
+	uint64_t start = mach_absolute_time();
+	fts_gpio_delay(5);
+	assert(mach_absolute_time() - start >= 25000 && mock_delay_calls == 1);
+	daisy_busywait = 1;
+	start = mach_absolute_time();
+	fts_gpio_delay(5);
+	uint64_t elapsed = mach_absolute_time() - start;
+	assert(elapsed >= 5000 && elapsed < 6000 && mock_delay_calls == 1);
 	for (unsigned count = 1; count <= FTS_REPORT_LEN; count++) {
 		fresh(); wire_init();
 		for (unsigned i = 0; i < sizeof(wire.report); i++) { wire.report[i] = (uint8_t)(0xa5 ^ i); }
@@ -33,10 +43,17 @@ test_gpio_reports(void)
 	assert(timing.point1 == base.point1 + 12345 && timing.data == base.data + 12345);
 	assert(timing.total == base.total + 12345 && timing.gap == base.gap + 12345);
 	assert(timing.low == ~0ull && !memcmp(buf, wire.report, 63));
+	/* Same bytes/ACKs with precise delays; no generic delay call on this path. */
+	fresh(); wire_init(); daisy_busywait = 1; mock_tick_ns = 100; mock_delay_factor = 5;
+	assert(fts_gpio_read_transfer(0, buf, 63, &stage, &received, &timing) == 0);
+	assert(!mock_delay_calls && timing.total >= 6000 && timing.total < 10000);
+	assert(!memcmp(buf, wire.report, 63) && wire.master_acks == 62 && wire.master_nacks == 1);
+	assert(wire.sda && wire.scl && !wire.active);
 	/* Every SCL high phase can time out, including final byte NACK and STOP. */
 	for (unsigned fault = 1; fault <= clocks * 2; fault++) {
 		fresh(); wire_init();
 		wire.fail_clock = (fault - 1) % clocks + 1;
+		if (fault > clocks) { daisy_busywait = 1; mock_tick_ns = 100; }
 		wire.stretch = FTS_GPIO_STRETCH_US + 1;
 		memset(buf, 0xee, sizeof(buf));
 		assert(fts_gpio_read_transfer(0, buf + 1, 63, &stage, &received, fault > clocks ? &timing : NULL) == -4);
@@ -64,7 +81,8 @@ test_gpio_reports(void)
 	/* Capture requires GPIO mode, power success, and successful identity/FW reads. */
 	for (unsigned fault = 0; fault < 6; fault++) {
 		fresh(); wire_init();
-		boot_trace = boot_daisy = boot_gpio = boot_power = boot_reports = 1;
+		boot_busywait = boot_trace = boot_daisy = boot_gpio = boot_power = boot_reports = 1;
+		mock_tick_ns = 100;
 		power_ready = true;
 		if (fault == 0) { boot_gpio = 0; }
 		if (fault == 1) { boot_power = 0; }
@@ -78,13 +96,15 @@ test_gpio_reports(void)
 	}
 	/* Full time-bounded run, including 30/60-second rail and identity checks. */
 	fresh(); wire_init();
-	boot_trace = boot_daisy = boot_gpio = boot_power = boot_reports = boot_probe = 1;
+	boot_busywait = boot_trace = boot_daisy = boot_gpio = boot_power = boot_reports = boot_probe = 1;
+	mock_tick_ns = 100; mock_delay_factor = 5;
 	power_ready = true; capture_step_ms = 10000;
 	vince_input_start(); started_fn(NULL, 0);
 	assert(wire.report_reads == 30 && capture_sleeps == 30 && power_calls == 1);
 	assert(wire.master_acks == 62 * 30 && wire.master_nacks == 30 + 12);
 	assert(!qup_maps && !qup_accesses && wire.sda && wire.scl);
 	assert(wire.irq_reads >= 64 * 30);
+	assert(mock_delay_calls == observer_reads + 32); /* rail delays plus legacy calibration */
 	/* A trace hint alone does not switch identity-only mode into capture. */
 	fresh(); wire_init();
 	boot_trace = boot_daisy = boot_gpio = boot_power = 1; power_ready = true;
