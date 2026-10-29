@@ -28,6 +28,7 @@ def main():
         for patch in (
             "0181-vince-adreno-506-bringup.patch", "0184-daisy-ft5446-probe.patch",
             "0185-daisy-vince-touch-crosscheck.patch",
+            "0186-daisy-gpio-touch-diagnostic.patch",
         ):
             subprocess.run([
                 "git", "-C", str(work), "apply", "--include=bsd/dev/vince_input.c",
@@ -46,6 +47,7 @@ def main():
             assert count == 1, name
         c = work / "test.c"
         c.write_text((TESTS / "daisy_touch_stubs.h").read_text() + "\n" + source +
+                     "\n" + (TESTS / "daisy_touch_gpio.c").read_text() +
                      "\n" + (TESTS / "daisy_touch_probe.c").read_text())
         binary = work / "test"
         subprocess.run([

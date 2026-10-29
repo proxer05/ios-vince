@@ -333,3 +333,86 @@ repeats with the probe summaries; it is bounded to those summaries rather than
 continuous logging. Identical NACKs on both methods would show the failure is
 not specific to repeated START, but would not by themselves prove a missing
 rail. Explicit rail enablement remains deferred pending this evidence.
+
+## GPIO/RPM reference review and independent probe (0186)
+
+User-provided reference: [grinkodbogdan/rpiios](https://github.com/grinkodbogdan/rpiios/tree/15fc60d01eee053cecc8f43f0983c51e7bafc0fb),
+branch `ccr-4261c3e6-0ebsg3`, pinned at
+`15fc60d01eee053cecc8f43f0983c51e7bafc0fb`.
+The relevant additions inside `hackios/hackios-xnu-kernel.diff` are
+`redwood_tissot_touch.c`, `redwood_tissot_buttons.c`, and
+`redwood_tissot_rpm.c`. Copies of the diff and the HackiOS/Mi A1 READMEs are
+saved under `artifacts/daisy-touch-identification/rpiios-15fc60d/`.
+Diff SHA-256: `a6232e3b335fe48dd0b11ab4ce3b4d6c66d3c44d41f17605d3adb8ee96fcdc2a`.
+
+Applicable findings:
+
+- Tissot uses the same FocalTech address `0x38` and GPIO10/11/64/65 wiring,
+  with open-drain GPIO I²C instead of QUP. The FT contact layout is relevant,
+  but its 1080×1920 geometry and `redwood_touch_post()` scaling are not Daisy's.
+- The source requests L10 at 2.85 V and L5/L6 at 1.8 V through RPM/SMD before
+  reset. The HackiOS README's claim of read-only supplies is stale; the Mi A1
+  README reflects the newer code. Daisy's recovered FT5446 DT names L10 and
+  L6 as its supplies; an L5 vote is not established by that node.
+- Its RPM channel uses the legacy SMEM table, 44-byte word-flag halves and
+  a different doorbell from Vince's current 20-byte Pronto channel helpers.
+  Reusing those helpers unchanged would be incorrect. The reference also
+  lacks request-ID validation in replies and TX free-space checking.
+- The reference GPIO receive/STOP paths ignore clock-stretch failure. Its
+  first contact count and records can come from separate reads; its decoder
+  processes only `count` records and does not expire contacts after sustained
+  read failures. These are not carried over to Daisy's planned live driver.
+- The [last explicit touch hardware report](https://github.com/grinkodbogdan/rpiios/commit/4437e2a735d6ee1609a271c871bbbb2a364c6ffd)
+  says touch did not work, before RPM support was added in `310cbd4`.
+  Later commits examined describe the RPM implementation but do not confirm
+  successful hardware touch. The reference is useful, not proof of transport.
+
+Patch `0186-daisy-gpio-touch-diagnostic.patch` implements a new, opt-in path:
+
+```text
+vincetouch=0 daisytouch=1 daisytouch_gpio=1 daisytouch_probe=1
+```
+
+`daisytouch_gpio` alone never enables touch. With `daisytouch=1` it selects
+one GPIO-only probe thread even if `vincetouch=1` is also supplied. It bypasses
+QUP/GCC mapping and initialization and supersedes `daisytouch_diag`.
+
+The probe reads inherited L10/L6 state through SPMI v2 observer channels
+before reset, then uses the vendor 20 ms low / 200 ms high reset sequence.
+It reads application ID `0xa3`/`0x9f` with up to three attempts, followed by
+firmware/vendor on a matching `5422`. Optional summaries repeat twice at
+30-second intervals. This path reads identity only; it does not replace the
+QUP 63-byte transport, deliver HID events, or write controller configuration,
+firmware, PMIC registers, or RPM requests.
+
+GPIO transport drives only low and releases high as an input, using existing
+external pull-ups. It propagates timeout errors from every SCL-high operation,
+including receive, final NACK and STOP. Failed reads leave their output byte
+unchanged and both lines released. A non-idle bus gets one bounded recovery
+sequence of up to nine clocks and STOP per summary. SDA/SCL remain released
+as plain GPIO inputs after the diagnostic completes; there is no QUP handoff.
+
+The observer checks for arbiter v2, scans its 512 channel-map entries, and maps
+only the L10/L6 observer pages (PPIDs `0x149` / `0x145`). It reads type/subtype
+`0x04/05`, status `0x08`, enable `0x46`, and voltage selectors `0x40/41`.
+Output `L10 p149 r0 type ... st... en... v.../...` is valid only for `r0`;
+failed reads print an error and zero-initialized/partial fields. Raw selectors
+are not a measured voltage, and status/enable require the appropriate PMIC
+type interpretation. Mapping/version failures produce no PMIC commands.
+
+GPIO read stages: `1` START/bus-free check, `2` write address, `3` register,
+`4` repeated START, `5` read address, `6` data/final NACK, `7` STOP.
+Errors: `-2` slave NACK, `-4` SCL-high timeout, `-6` SDA not released.
+`id0000` on failure remains an initialized/partial value, not a valid chip ID.
+GPIO success would point toward the QUP path or its setup; repeatability across
+cold boots is still needed. GPIO failure plus raw rail state guides the next
+power/reset investigation.
+
+Host tests run the actual patched C against an edge-driven open-drain slave
+model and observer MMIO. They check address/register bytes, repeated START,
+final master NACK, SCL timeout at every transfer clock (including receive and
+STOP), finite stretching, slave NACK at each transmit byte, stuck lines,
+bounded recovery/retries, unpublished failed reads, released outputs, reset
+timing, exclusive selection, no QUP accesses, and observer-only read commands.
+Missing mappings, unsupported arbiter versions, APIDs above 255, denied reads
+and read timeouts are exercised too. **0186 CI and device results pending.**

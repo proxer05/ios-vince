@@ -1,0 +1,345 @@
+diff --git a/bsd/dev/vince_input.c b/bsd/dev/vince_input.c
+--- a/bsd/dev/vince_input.c
++++ b/bsd/dev/vince_input.c
+@@ -24,7 +24,10 @@
+  * bring-up stage only probes identity and coherent 63-byte reports; it
+  * never sends touch events or writes controller firmware/configuration.
+  * daisytouch_probe=1 repeats the summary at 30 and 60 seconds for console
+- * observation. Both Daisy options default off.
++ * observation. daisytouch_gpio=1 selects an independent GPIO identity-only
++ * probe with read-only L10/L6 snapshots; it needs daisytouch=1 and bypasses
++ * QUP initialization and daisytouch_diag. All Daisy options default off.
++ * GPIO mode leaves SDA/SCL released as inputs after its bounded probe.
+  */
+ #if defined(ARM64_BOARD_CONFIG_VINCE)
+ #include <sys/param.h>
+@@ -117,7 +120,7 @@
+ static bool input_started;
+ static int keys_chan, touch_chan;
+ static int daisy_touch, daisy_probe;
+-static int daisy_diag;
++static int daisy_diag, daisy_gpio;
+ static uint32_t qup_last_bus_error, qup_last_error;
+ 
+ static uint32_t
+@@ -594,6 +597,283 @@
+ 	    r ? 0 : report[2] & 15u, in_rd(tlmm, GPIO_IO(GPIO_ATTN)) & 1u);
+ }
+ 
++/*
++ * Independent FT5446 probe. Reference: grinkodbogdan/rpiios at
++ * 15fc60d01eee053cecc8f43f0983c51e7bafc0fb, hackios/hackios-xnu-kernel.diff,
++ * redwood_tissot_touch.c (GPIO I2C) and redwood_tissot_buttons.c (SPMI v2).
++ * Daisy uses L10/L6 only. No RPM votes or PMIC/controller register writes.
++ * Unlike that reference, every SCL timeout (including receive and STOP)
++ * is propagated, and a failed transaction never publishes its data byte.
++ * Use external board pull-ups only: internal pulls can hide a missing rail.
++ */
++#define FTS_GPIO_HALF_US 5u
++#define FTS_GPIO_STRETCH_US 2000u
++static vm_offset_t fts_rail_obs[2];
++static const unsigned fts_rail_ppid[2] = {0x149, 0x145}; /* SID 1: L10, L6 */
++
++static void
++fts_rail_init(void)
++{
++	vm_offset_t core = ml_io_map(SPMI_CORE_PA, 0x1000);
++	uint32_t version = core ? in_rd(core, 0) : 0;
++	printf("DAISY TOUCH: rail observer arb %x (read only)\n", version);
++	if (version < 0x20010000u || version >= 0x30000000u) {
++		return;
++	}
++	for (unsigned rail = 0; rail < 2; rail++) {
++		/* The v2 table occupies core+0x800..0xffc (512 entries). */
++		for (unsigned apid = 0; apid < 512; apid++) {
++			uint32_t map = in_rd(core, 0x800 + 4 * apid);
++			if (map && ((map >> 8) & 0xfffu) == fts_rail_ppid[rail]) {
++				fts_rail_obs[rail] = ml_io_map(SPMI_OBS_PA + 0x8000u * apid, 0x1000);
++				break;
++			}
++		}
++	}
++}
++
++static int
++fts_rail_read(vm_offset_t obs, unsigned reg, uint8_t *value)
++{
++	if (!obs) {
++		return -1;
++	}
++	/* Only EXT_READL commands on EE0 observer pages; no write-channel map. */
++	in_wr(obs, 0, (1u << 27) | (reg << 4));
++	for (unsigned i = 0; i < 2000; i++) {
++		uint32_t status = in_rd(obs, 8);
++		if (status & 0xeu) {
++			return -(int)status;
++		}
++		if (status & 1u) {
++			*value = (uint8_t)in_rd(obs, 0x18);
++			return 0;
++		}
++		delay(1);
++	}
++	return -100;
++}
++
++static void
++fts_rail_summary(void)
++{
++	static const unsigned reg[] = {0x04, 0x05, 0x08, 0x46, 0x40, 0x41};
++	for (unsigned rail = 0; rail < 2; rail++) {
++		uint8_t v[6] = {0};
++		int r = 0;
++		for (unsigned i = 0; i < 6 && !r; i++) {
++			r = fts_rail_read(fts_rail_obs[rail], reg[i], &v[i]);
++		}
++		/* Raw range/selector are not a measured voltage; r must be zero. */
++		printf("DAISY TOUCH: L%u p%x r%d type %02x/%02x st%02x en%02x v%02x/%02x\n",
++		    rail ? 6u : 10u, fts_rail_ppid[rail], r, v[0], v[1], v[2], v[3], v[4], v[5]);
++	}
++}
++
++/* Open drain: preload zero before output-enable; high means input. */
++static void
++fts_gpio_line(unsigned pin, bool high)
++{
++	tlmm_cfg(pin, 0, 0, 0, !high, false);
++}
++
++static bool
++fts_gpio_level(unsigned pin)
++{
++	return (in_rd(tlmm, GPIO_IO(pin)) & 1u) != 0;
++}
++
++static int
++fts_gpio_scl_high(void)
++{
++	fts_gpio_line(GPIO_SCL, true);
++	for (unsigned i = 0; i < FTS_GPIO_STRETCH_US; i++) {
++		if (fts_gpio_level(GPIO_SCL)) {
++			delay(FTS_GPIO_HALF_US);
++			return 0;
++		}
++		delay(1);
++	}
++	return -4;
++}
++
++static void
++fts_gpio_scl_low(void)
++{
++	fts_gpio_line(GPIO_SCL, false);
++	delay(FTS_GPIO_HALF_US);
++}
++
++static int
++fts_gpio_start(void)
++{
++	fts_gpio_line(GPIO_SDA, true);
++	delay(FTS_GPIO_HALF_US);
++	int r = fts_gpio_scl_high();
++	if (r) {
++		return r;
++	}
++	if (!fts_gpio_level(GPIO_SDA)) {
++		return -6; /* bus not free (also checked before repeated START) */
++	}
++	fts_gpio_line(GPIO_SDA, false);
++	delay(FTS_GPIO_HALF_US);
++	fts_gpio_scl_low();
++	return 0;
++}
++
++static int
++fts_gpio_stop(void)
++{
++	/* SCL may still be released after an error. Establish low first. */
++	fts_gpio_scl_low();
++	fts_gpio_line(GPIO_SDA, false);
++	delay(FTS_GPIO_HALF_US);
++	int r = fts_gpio_scl_high();
++	fts_gpio_line(GPIO_SDA, true);
++	delay(FTS_GPIO_HALF_US);
++	return r ? r : (fts_gpio_level(GPIO_SDA) ? 0 : -6);
++}
++
++static int
++fts_gpio_put(uint8_t byte)
++{
++	for (int bit = 7; bit >= 0; bit--) {
++		fts_gpio_line(GPIO_SDA, (byte >> bit) & 1u);
++		delay(FTS_GPIO_HALF_US);
++		int r = fts_gpio_scl_high();
++		if (r) {
++			return r;
++		}
++		fts_gpio_scl_low();
++	}
++	fts_gpio_line(GPIO_SDA, true);
++	int r = fts_gpio_scl_high();
++	if (!r && fts_gpio_level(GPIO_SDA)) {
++		r = -2;
++	}
++	fts_gpio_scl_low();
++	return r;
++}
++
++static int
++fts_gpio_get(uint8_t *byte)
++{
++	uint8_t v = 0;
++	fts_gpio_line(GPIO_SDA, true);
++	for (unsigned bit = 0; bit < 8; bit++) {
++		int r = fts_gpio_scl_high();
++		if (r) {
++			return r;
++		}
++		v = (uint8_t)((v << 1) | fts_gpio_level(GPIO_SDA));
++		fts_gpio_scl_low();
++	}
++	/* Identity reads are one byte: the master NACKs the final byte. */
++	int r = fts_gpio_scl_high();
++	fts_gpio_scl_low();
++	if (!r) {
++		*byte = v;
++	}
++	return r;
++}
++
++/* Stage: 1 START, 2 addr-W, 3 register, 4 RESTART, 5 addr-R, 6 data, 7 STOP. */
++static int
++fts_gpio_read(uint8_t reg, uint8_t *value, unsigned *stage)
++{
++	uint8_t v = 0;
++	*stage = 1;
++	int r = fts_gpio_start();
++	if (!r) { *stage = 2; r = fts_gpio_put(FTS_ADDR << 1); }
++	if (!r) { *stage = 3; r = fts_gpio_put(reg); }
++	if (!r) { *stage = 4; r = fts_gpio_start(); }
++	if (!r) { *stage = 5; r = fts_gpio_put((FTS_ADDR << 1) | 1u); }
++	if (!r) { *stage = 6; r = fts_gpio_get(&v); }
++	int stop = fts_gpio_stop();
++	if (!r) { *stage = 7; r = stop; }
++	/* No low output survives any error, even an unsuccessful STOP. */
++	fts_gpio_line(GPIO_SDA, true);
++	fts_gpio_line(GPIO_SCL, true);
++	if (!r) {
++		*value = v;
++	}
++	return r;
++}
++
++static int
++fts_gpio_recover(void)
++{
++	fts_gpio_line(GPIO_SDA, true);
++	int r = 0;
++	for (unsigned i = 0; i < 9 && !r; i++) {
++		fts_gpio_scl_low();
++		r = fts_gpio_scl_high();
++	}
++	int stop = fts_gpio_stop();
++	fts_gpio_line(GPIO_SDA, true);
++	fts_gpio_line(GPIO_SCL, true);
++	return r ? r : stop;
++}
++
++static void
++fts_gpio_summary(void)
++{
++	uint8_t hi = 0, lo = 0, fw = 0, vendor = 0, reg = 0xa3;
++	unsigned stage = 0, attempts;
++	int r = -1;
++	printf("DAISY TOUCH: GPIO SDA%u SCL%u reset%u irq%u (external pulls)\n",
++	    fts_gpio_level(GPIO_SDA), fts_gpio_level(GPIO_SCL),
++	    fts_gpio_level(GPIO_RST), fts_gpio_level(GPIO_ATTN));
++	if (!fts_gpio_level(GPIO_SDA) || !fts_gpio_level(GPIO_SCL)) {
++		printf("DAISY TOUCH: GPIO recovery r%d\n", fts_gpio_recover());
++	}
++	for (attempts = 1; attempts <= 3; attempts++) {
++		hi = lo = 0;
++		reg = 0xa3;
++		r = fts_gpio_read(reg, &hi, &stage);
++		if (!r) {
++			reg = 0x9f;
++			r = fts_gpio_read(reg, &lo, &stage);
++		}
++		if ((!r && hi == 0x54 && lo == 0x22) || attempts == 3) {
++			break;
++		}
++		in_sleep(&touch_chan, 100);
++	}
++	printf("DAISY TOUCH: GPIO id r%d reg%02x stage%u id%02x%02x tries%u\n",
++	    r, reg, stage, hi, lo, attempts);
++	if (r || hi != 0x54 || lo != 0x22) {
++		return;
++	}
++	int rf = fts_gpio_read(0xa6, &fw, &stage);
++	int rv = fts_gpio_read(0xa8, &vendor, &stage);
++	printf("DAISY TOUCH: GPIO FT5446 fw r%d:%02x vendor r%d:%02x; probe only\n", rf, fw, rv, vendor);
++}
++
++static void
++fts_gpio_probe(void)
++{
++	printf("DAISY TOUCH: GPIO probe 0x38; QUP bypass, no HID\n");
++	fts_rail_init();
++	fts_rail_summary(); /* inherited power, before changing pins/reset */
++	fts_gpio_line(GPIO_SDA, true);
++	fts_gpio_line(GPIO_SCL, true);
++	tlmm_cfg(GPIO_ATTN, 0, 3, 0, false, false);
++	tlmm_cfg(GPIO_RST, 0, 0, 3, true, false);
++	in_sleep(&touch_chan, 20);
++	tlmm_cfg(GPIO_RST, 0, 0, 3, true, true);
++	in_sleep(&touch_chan, 200);
++	fts_gpio_summary();
++	if (daisy_probe) {
++		for (unsigned i = 0; i < 2; i++) {
++			in_sleep(&touch_chan, 30000);
++			fts_rail_summary();
++			fts_gpio_summary();
++		}
++	}
++}
++
+ static void
+ fts_probe_thread(void *arg, wait_result_t result)
+ {
+@@ -601,6 +881,10 @@
+ 	int r = -1;
+ 	(void)arg;
+ 	(void)result;
++	if (daisy_gpio) {
++		fts_gpio_probe();
++		goto out;
++	}
+ 	qup_clk_ctl = CLK_CTL_100K;
+ 	printf("DAISY TOUCH: FT5446 probe at 0x38, 100 kHz; no HID events\n");
+ 	if (!touch_hw_init()) {
+@@ -731,6 +1015,7 @@
+ 	(void)PE_parse_boot_argn("daisytouch", &daisy_touch, sizeof(daisy_touch));
+ 	(void)PE_parse_boot_argn("daisytouch_probe", &daisy_probe, sizeof(daisy_probe));
+ 	(void)PE_parse_boot_argn("daisytouch_diag", &daisy_diag, sizeof(daisy_diag));
++	(void)PE_parse_boot_argn("daisytouch_gpio", &daisy_gpio, sizeof(daisy_gpio));
+ 	tlmm = ml_io_map(TLMM_PA, TLMM_SIZE);
+ 	if (!tlmm) {
+ 		printf("VINCE INPUT: TLMM mapping failed\n");
+@@ -753,10 +1038,13 @@
+ 		}
+ 	}
+ 	if (touch || daisy_touch) {
+-		gcc = ml_io_map(GCC_QUP3_PA, 0x1000);
+-		qup = ml_io_map(QUP3_PA, 0x1000);
+-		/* Exactly one source owns QUP3, even if both selectors are set. */
+-		if (gcc && qup && kernel_thread_start(daisy_touch ? fts_probe_thread : touch_thread,
++		bool gpio_only = daisy_touch && daisy_gpio;
++		if (!gpio_only) {
++			gcc = ml_io_map(GCC_QUP3_PA, 0x1000);
++			qup = ml_io_map(QUP3_PA, 0x1000);
++		}
++		/* One owner of GPIO10/11. GPIO mode does not map or access QUP/GCC. */
++		if ((gpio_only || (gcc && qup)) && kernel_thread_start(daisy_touch ? fts_probe_thread : touch_thread,
+ 		    NULL, &thread) == KERN_SUCCESS) {
+ 			thread_deallocate(thread);
+ 		} else {
