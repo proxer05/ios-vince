@@ -784,3 +784,39 @@ The next temporary boot uses `daisytouch_rpm_diag=1` to capture item342,
 the accepted physical ranges, states/indices, and repeated rail observations.
 Power remains separately opt-in; successful RPM/rail readback, identity and
 coherent touch reports still require hardware evidence.
+
+### Auxiliary-SMEM layout diagnostic image — 2026-10-29
+
+CI run [40938184413](https://github.com/proxer05/ios-vince/actions/runs/40938184413)
+passed for commit `b3be16b8e469e3ca9cbcec912e8b75e85fbe0ed0`, retaining
+`MACHINE_CONFIG=VINCE`. The log confirms 0189 applied, `daisy_touch_rpm.c`
+compiled, and the linked auxiliary-mapping/snapshot markers passed. The
+downloaded kernel matches CI's `SHA256SUMS`.
+
+- Kernel: `artifacts/kernel-0189/kernel.development.vince`.
+- Kernel SHA-256: `19a7d68bc0d4b9ce92d55e078f79b66717c0835a2d4a66ee4eb8e6e6561e8d63`.
+- Image: `artifacts/daisy-touch-layout-0189/daisy-boot.img` (17,920,000 bytes).
+- Image SHA-256: `dbec6edd14d3bea8b3b8667b539a3c2c012f4e337c2149c96213812310d647b1`.
+- Logs: `artifacts/daisy-touch-dev/ci-build-0189.log` and
+  `build-image-0189.log`.
+
+```sh
+VINCE_NO_FBCON=0 \
+DTB="$PWD/artifacts/daisy-dtb.bin" \
+PAYLOAD_CMDLINE='debug=0xc serial=3 cpus=1 keepsyms=1 io=0x3f -noprogress wdt=-1 wdt_test=no_user_checkin rd=mmcroot0 mmcrw=1 rootrw=1 unentitled_ios_sim_launch=1 launchd_unsecure_cache=1 ignition_level=1 vincefix=bluetool vincetouch=0 vincekeys=1 daisytouch=1 daisytouch_probe=1 daisytouch_gpio=1 daisytouch_rpm_diag=1 startup_debug=0 -disable_kprintf' \
+tools/build_daisy.sh artifacts/kernel-0189/kernel.development.vince artifacts/daisy-touch-layout-0189
+fastboot -s 6790a29e0305 boot artifacts/daisy-touch-layout-0189/daisy-boot.img
+```
+
+Verified the Android v0 header/hash, appended Daisy DTBs, empty `second`,
+embedded payload/ADT, exact cmdline, RAM bounds, every kernel segment, and
+0189 markers. The complete ADT matches 0188 apart from its fresh random seed,
+including geometry/artwork properties. Fastboot reported successful transfer
+and temporary boot on serial `6790a29e0305` in 0.537 s.
+
+**Awaiting on-screen results.** After at least 60 seconds, capture the complete
+`DAISY RPM:` / `DAISY TOUCH:` block, especially mapped item18, item342 metadata
+and mapping, the `snapshot half... state... tx... rx... bounds...` line,
+layout result/stage, and L10/L6 observations. Include any repeated 30/60-second
+output. The cmdline selects layout-only diagnostics with reset held low;
+it supplies neither `daisytouch_power` nor `sweethidtest`.
