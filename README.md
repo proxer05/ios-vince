@@ -13,7 +13,9 @@ milestone is complete. See [boot diagnostics](docs/BOOT-DEBUG.md) for the
 known-working image and build command.
 
 **Touch identification:** TWRP confirmed **FocalTech FT5446** (`0x5422`),
-Ofilm touch panel + CSOT LCD, firmware `0x0c` on this handset. See the
+Ofilm touch panel + CSOT LCD, firmware `0x0c` on this handset. XNU's opt-in
+0190 test now confirms RPM L10/L6 ACKs, ready rails, and three successful GPIO
+identity reads. Coherent reports and touch HID delivery are next. See the
 [touchscreen bring-up plan](docs/TOUCHSCREEN-PLAN.md).
 
 ## Target Hardware

@@ -300,3 +300,14 @@ are now validated on the device for this diagnostic interval.
 Returned from TWRP with `adb -s 6790a29e0305 reboot bootloader`, verified
 `product: daisy`, then temporarily booted the opt-in RPM power test described
 in [the touch plan](TOUCHSCREEN-PLAN.md#0190-powerack-test-with-persistent-logging).
+
+### 0190 power-test log collected
+
+After the power test, temporarily booted TWRP and saved
+`artifacts/console-power-0190.log` (283,516 bytes, 3,084 lines;
+SHA-256 `0d9ca1525bb5a4048e226c504209555d3c92f31f5e98059b53cf3446b627769f`).
+It contains both successful RPM vote/ACK records, `rails-ready1`, and three
+first-attempt FT5446 identity reads, plus later userspace and both process
+sampler passes. See [the power-test result](TOUCHSCREEN-PLAN.md#0190-power-test-result-rpm-and-gpio-identity-validated)
+for the exact hardware evidence. The complete log was collected without
+copying or mounting the full HFS root; the device remains in TWRP.

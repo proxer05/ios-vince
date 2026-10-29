@@ -1,5 +1,11 @@
 # Daisy FT5446 touchscreen bring-up
 
+**Current milestone (0190):** RPM L10/L6 votes and matching ACKs, enabled/ready
+rail readback, and FT5446 GPIO identity (`0x5422`, firmware `0x0c`, vendor `0x51`)
+are validated on this handset, including the 30/60-second identity repeats.
+The complete evidence is in `artifacts/console-power-0190.log`. Next validate
+coherent 63-byte reports before contact decoding and touch HID delivery.
+
 ## Hardware identified in TWRP — 2026-10-29
 
 Target: Xiaomi Mi A2 Lite (`daisy`), 3 GB / 64 GB, serial `6790a29e0305`.
@@ -75,7 +81,7 @@ Patch `0184-daisy-ft5446-probe.patch` now extends `vince_input.c` after the
 working 0183 baseline with explicit FT5446 selection and reused QUP/TLMM
 helpers. Keep `MACHINE_CONFIG=VINCE`.
 
-Implemented probe-stage options (hardware validation pending):
+Implemented QUP probe-stage options (QUP/report hardware validation pending):
 
 - `daisytouch=1`: select FT5446 input; absent/zero keeps Daisy touch disabled.
 - `daisytouch_probe=1`: with `daisytouch=1`, repeat the probe summary after
@@ -103,8 +109,9 @@ Use the controller's resident application firmware for bring-up.
 **Pass condition:** repeatable identity reads after reset, including a cold
 boot through fastboot, rather than only immediately after TWRP.
 Emit one concise probe summary plus bounded failure diagnostics. Verify its
-visibility in a diagnostic-console image before interactive UI testing;
-the current VINCE kernel RAM log is not automatically persisted to userdata.
+visibility in a diagnostic-console image before interactive UI testing.
+The 0190 `daisylog=1` worker now persists the VINCE console to the HFS root;
+the successful identity path currently uses `daisytouch_gpio=1` with RPM power.
 
 ### 2. Read complete, coherent touch reports
 
@@ -951,3 +958,51 @@ transfer and temporary boot on serial `6790a29e0305` in 0.543 s.
 boot TWRP, and save the next console to `artifacts/console-power-0190.log`.
 Required evidence: channel-open result, L10/L6 vote/ACK lines, rail readback,
 `rails-ready`, and any GPIO identity/transfer results and repeated samples.
+
+### 0190 power test result: RPM and GPIO identity validated
+
+After the test, temporarily booted TWRP on serial `6790a29e0305` (fastboot
+success in 1.794 s) and extracted the complete saved console:
+
+```sh
+python3 tools/pull_daisy_console.py artifacts/console-power-0190.log --serial 6790a29e0305
+```
+
+- Size: **283,516 bytes**, 3,084 lines.
+- SHA-256: `0d9ca1525bb5a4048e226c504209555d3c92f31f5e98059b53cf3446b627769f`.
+
+The existing handshake successfully reopens the previously observed
+CLOSED/CLOSING channel. The bounded mapper still uses the same proven
+primary/auxiliary locations. The two active-set requests each complete once:
+
+```text
+DAISY RPM: half1024 states0/4 ipcb011008
+DAISY RPM: L10 uv2850000 id1 r0 ack 716572/c/2367736d
+DAISY RPM: L6 uv1800000 id2 r0 ack 716572/c/2367736d
+DAISY RPM: power result 0
+DAISY TOUCH: L10 p149 r0 type 21/09 st80 en80 v00/58
+DAISY TOUCH: L6 p145 r0 type 21/2a st82 en80 v00/04
+DAISY TOUCH: RPM r0 rails-ready1
+DAISY TOUCH: GPIO SDA1 SCL1 reset1 irq1 (external pulls)
+DAISY TOUCH: GPIO id r0 reg9f stage7 id5422 tries1
+DAISY TOUCH: GPIO FT5446 fw r0:0c vendor r0:51; probe only
+```
+
+`r0` for each vote means the ACK parser accepted the expected request ID with
+no RPM error. L10 changes from `st00 en00 v00/54` to `st80 en80 v00/58`;
+L6 stays `st82 en80 v00/04`. Those selectors encode the requested 2.85 V and
+1.80 V settings; they are not external voltage measurements. Both rails pass
+the independent enabled/ready gate before reset is released.
+
+All **three identity probes** (initial, 30 seconds, 60 seconds) return
+`id5422 tries1`, firmware `0c`, vendor `51`. Both repeated rail summaries also
+match the successful post-vote values. This validates RPM power and the GPIO
+identity/register-read path; supplying the specified rails resolves the GPIO
+probe's earlier NACKs. It does not establish QUP operation or report coherence.
+
+The log also includes process-sampler passes 0 and 1 and later userspace
+activity, with no logger-stop/loss markers. The phone is left in TWRP after
+collection. Next add an opt-in coherent register-0 **63-byte report** capture
+using the validated power/identity sequence, retaining ten-slot/1080×2280
+geometry and the existing HID transform. Confirm complete idle and moving
+contact frames before enabling contact decoding or touch event delivery.
