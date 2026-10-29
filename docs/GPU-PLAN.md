@@ -147,9 +147,16 @@ diagnostic behind a delayed logged worker for the next build.
    needs proper GPU/cache synchronization beyond a CP memory-write fence.
 4. **Actual rendering:** integrate an Adreno-506-capable userspace renderer,
    shader compiler, IOSurface sharing and the CoreAnimation presentation
-   path. The repository currently contains no Metal/OpenGL ES renderer
-   implementation. `AppleCLCD` currently packs/copies the displayed surface
-   into the 24-bpp panel buffer on the CPU.
+   path. The GPU userland stack has been imported from
+   [`MakrSas/ios-topaz`](https://github.com/MakrSas/ios-topaz) (`userland/gpu/`
+   and `userland/mesa/`), providing:
+   - `userland/gpu/bbd_wrap.c`: `/usr/libexec/backboardd` wrapper setting `DYLD_INSERT_LIBRARIES`.
+   - `userland/gpu/daisy_inject.c`: injector overriding `containermanagerd` personas, installing backtrace signal handlers, and hooking `CA::OGL::GLESContext`.
+   - `userland/gpu/eagl.c` + `gl_osmesa.c`: `EAGLContext` swizzling driving Mesa freedreno/softpipe via off-screen OSMesa, binding IOSurfaces zero-copy to GL textures.
+   - `userland/mesa/`: Mesa 25.0.7 build recipe (`mk-mesa-mac.sh`), Darwin patches, and `redwood-drm` (translating Linux DRM requests into IOKit user client calls against `DaisyGPU`/`VinceGPU`/`RedwoodGPU`).
+   - `userland/gpu/mkeagl.py` + `eagl_slots.txt`: Macro context function dispatch table generator.
+   See [`userland/README.md`](../userland/README.md) for architecture, build steps and deployment.
+   `AppleCLCD` currently packs/copies the displayed surface into the 24-bpp panel buffer on the CPU.
 5. **Interactive validation:** return to the eight-core, logging-disabled
    touch baseline with the validated GPU path enabled; verify real rendered
    output, navigation and measured frame timing.
@@ -162,6 +169,9 @@ diagnostic behind a delayed logged worker for the next build.
   Local copy: `artifacts/daisy-gpu-identification/a5xx_reg.h`.
 - Imported GPU code: `xnu/patches/0181-vince-adreno-506-bringup.patch`, through
   upstream `401873c2facdbb618c87ccc93ff479472884269a`.
+- [`ios-topaz`](https://github.com/MakrSas/ios-topaz) (`/hdd/ios-topaz`):
+  provenance for the Adreno/Mesa freedreno Darwin userland stack (`userland/gpu/`,
+  `userland/mesa/`).
 - [`hakios-metal`](https://github.com/oosexgang/hakios-metal/tree/54a46fadec5bd9684ebd77f3a0834c84b5eb01a6),
   commit `54a46fadec5bd9684ebd77f3a0834c84b5eb01a6`: useful command-transport
   and blit reference. Its README explicitly says shaders and CoreAnimation

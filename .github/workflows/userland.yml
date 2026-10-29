@@ -5,7 +5,7 @@ name: userland
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches: [main, daisy-boot]
     paths:
       - "userland/**"
       - ".github/workflows/userland.yml"
@@ -31,6 +31,25 @@ jobs:
             file "out/vince-$n"
             ls -la "out/vince-$n"
           done
+          # Build GPU injection helpers
+          echo "Building GPU userland helpers..."
+          xcrun --sdk iphoneos clang -arch arm64 -miphoneos-version-min=16.0 -isysroot "$SDK" -O2 -Wall \
+            -o "out/bbd_wrap" userland/gpu/bbd_wrap.c
+          codesign -f -s - --entitlements userland/ent.plist "out/bbd_wrap"
+
+          xcrun --sdk iphoneos clang -arch arm64 -miphoneos-version-min=16.0 -isysroot "$SDK" -O2 -Wall \
+            -dynamiclib -install_name /daisy/lib/libdaisy-inject.dylib \
+            -framework CoreFoundation -framework IOKit \
+            -o "out/libdaisy-inject.dylib" userland/gpu/daisy_inject.c
+          codesign -f -s - --entitlements userland/ent.plist "out/libdaisy-inject.dylib"
+
+          xcrun --sdk iphoneos clang -arch arm64 -miphoneos-version-min=16.0 -isysroot "$SDK" -O2 -Wall \
+            -dynamiclib -install_name /topaz/lib/libtopaz-inject.dylib \
+            -framework CoreFoundation -framework IOKit \
+            -o "out/libtopaz-inject.dylib" userland/gpu/topaz_inject.c
+          codesign -f -s - --entitlements userland/ent.plist "out/libtopaz-inject.dylib"
+
+          ls -la out/
       - uses: actions/upload-artifact@v4
         with:
           name: userland-bin
