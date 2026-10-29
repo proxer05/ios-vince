@@ -269,12 +269,16 @@ python3 tools/pull_daisy_console.py artifacts/console-0190.log --serial 6790a29e
 - Ends at `exec usermanagerd [--init]`, after launchd's `13:08:44.263557` line.
   No 30/60-second layout repeats, logger-stop, or RAM-loss marker are present.
 
-This validates early-buffer replay and persistence across the reboot to
-recovery, plus the direct single-file extraction path. Sustained logging is
-not yet validated by this capture. The boot's visible progress needs confirming.
+The user clarified that this boot was deliberately rebooted early and that
+normal boots reach the lockscreen. This explains the early cutoff and missing
+30/60-second repeats; the capture is not evidence of a boot or logger hang.
+Early-buffer replay, persistence across the reboot to recovery, and the direct
+single-file extraction path are validated. A future diagnostic boot should run
+for at least 90 seconds to capture the scheduled repeats.
+
 Source audit also identifies a retrieval limitation: journaled HFS's ordinary
 `hfs_fsync()` updates the catalog in a transaction, while `hfs_metasync()` is a
 no-op when a journal exists (`hfs_vnops.c:3214–3236,3262–3264`); full fsync uses
 `HFS_FLUSH_FULL`. SleuthKit reads the catalog without replaying pending HFS
-journal transactions. Thus this recovered EOF alone cannot distinguish a
-stalled boot/logger from newer metadata still residing in the journal.
+journal transactions. This remains a consideration for future recovery
+captures, rather than an established cause of this deliberately short log.

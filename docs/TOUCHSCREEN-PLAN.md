@@ -895,6 +895,7 @@ selector encodes 1.80 V. L10 remains disabled/not-ready with a 2.80 V selector.
 These are register observations, not measured rail voltages. The diagnostic
 made no RPM votes and held reset low; FT5446 identity remains untested here.
 
-The saved file ends during early userspace and contains only the first layout
-pass. Confirm sustained logging/recovery visibility before relying on it for
-30/60-second comparisons; see the HFS journal caveat in the boot diagnostics.
+The user confirmed deliberately rebooting early; normal boots reach the
+lockscreen. This explains why the saved file contains only the first layout
+pass. Early-log persistence is validated. Allow at least 90 seconds on the next
+diagnostic boot before rebooting to recovery for the 30/60-second comparisons.
