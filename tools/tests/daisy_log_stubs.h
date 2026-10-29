@@ -112,5 +112,5 @@ static kern_return_t kernel_thread_start(void (*fn)(void *, wait_result_t), void
 }
 static void thread_deallocate(thread_t thread) { assert(thread == &file); }
 static thread_t current_thread(void) { return &file; }
-static void thread_terminate(thread_t thread) { assert(thread == &file); terminates++; }
+static kern_return_t thread_terminate(thread_t thread) { assert(thread == &file); terminates++; return KERN_SUCCESS; }
 static void mock_sleep(unsigned);

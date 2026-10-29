@@ -198,6 +198,12 @@ replay, wrap/loss, opt-in selectors, console-lock/I/O separation, existing-file
 guards, short/failed writes, flush failures, and the size cap. Device persistence
 and extraction still require a logging-enabled boot followed by recovery.
 
+The first combined CI run, `40943366267` at `23f0bdc`, compiled the upstream
+GPU sources but rejected the logger's undeclared `thread_terminate` call.
+Added the same explicit `kern_return_t thread_terminate(thread_t)` declaration
+used by `vince_input.c` and `vince_smd.c`, and corrected the host stub's return
+type. This is a compile fix; the logging behavior is unchanged.
+
 ## Upstream GPU refresh accompanying 0190
 
 Merged `arabaci0711-ux/ios-vince` through

@@ -12,10 +12,10 @@ index 2e1440f..876c278 100644
  bsd/dev/vince_pmic.c			standard
 diff --git a/bsd/dev/daisy_log.c b/bsd/dev/daisy_log.c
 new file mode 100644
-index 0000000..57a3319
+index 0000000..8042b76
 --- /dev/null
 +++ b/bsd/dev/daisy_log.c
-@@ -0,0 +1,175 @@
+@@ -0,0 +1,176 @@
 +/*
 + * Opt-in eMMC console logging after the root vnode is installed. Replays the
 + * existing early VINCE RAM ring and follows it using a separate kernel thread.
@@ -38,6 +38,7 @@ index 0000000..57a3319
 +#include <pexpert/pexpert.h>
 +
 +extern unsigned int real_ncpus;
++extern kern_return_t thread_terminate(thread_t);
 +extern int daisy_console_read(uint64_t *, char *, unsigned, uint64_t *);
 +void daisy_log_start(void);
 +
