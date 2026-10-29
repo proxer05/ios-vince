@@ -531,4 +531,40 @@ and selector behavior, pre-vote type checks, reset-held failures and successful
 GPIO identity after ready readback. GCC sanitizers pass both suites; device
 behavior and XNU SDK compatibility still require CI/hardware validation.
 
-**0187 CI/image/device results pending.**
+### RPM power diagnostic image — 2026-10-29
+
+CI run [40922494438](https://github.com/proxer05/ios-vince/actions/runs/40922494438)
+passed for commit `9429329f6b152bca0cd88d40626f005e916376d8`, retaining
+`MACHINE_CONFIG=VINCE`. The build log confirms 0187 applied and compiled,
+and the linked Bluetooth, QUP, GPIO and RPM marker checks passed. The downloaded
+kernel matches its CI `SHA256SUMS`.
+
+- Kernel: `artifacts/kernel-0187/kernel.development.vince`.
+- Kernel SHA-256: `5112738587a013d5ea81c61e09bbca6585bed0192c9c772e802646970119a339`.
+- Image: `artifacts/daisy-touch-power-0187/daisy-boot.img` (17,917,952 bytes).
+- Image SHA-256: `6786a9a847ccd36ca7c4e02591082e5d7defe34c2c19475be70e41bdcd790647`.
+- Logs: `artifacts/daisy-touch-dev/ci-build-0187.log` and `build-image-0187.log`.
+
+```sh
+VINCE_NO_FBCON=0 \
+DTB="$PWD/artifacts/daisy-dtb.bin" \
+PAYLOAD_CMDLINE='debug=0xc serial=3 cpus=1 keepsyms=1 io=0x3f -noprogress wdt=-1 wdt_test=no_user_checkin rd=mmcroot0 mmcrw=1 rootrw=1 unentitled_ios_sim_launch=1 launchd_unsecure_cache=1 ignition_level=1 vincefix=bluetool vincetouch=0 vincekeys=1 daisytouch=1 daisytouch_probe=1 daisytouch_gpio=1 daisytouch_power=1 startup_debug=0 -disable_kprintf' \
+tools/build_daisy.sh artifacts/kernel-0187/kernel.development.vince artifacts/daisy-touch-power-0187
+fastboot -s 6790a29e0305 boot artifacts/daisy-touch-power-0187/daisy-boot.img
+```
+
+Verified the assembled boot header, appended DTBs, empty `second`, embedded
+ADT, RAM base/size, console/physical geometry, logical canvas, artwork
+properties, exact power/GPIO cmdline and linked markers. The ADT matches 0186
+except for the fresh random seed; product traits match the confirmed homescreen
+baseline. No `sweethidtest` is supplied. Fastboot reported successful transfer
+and temporary boot; the boot partition was not flashed.
+
+**Awaiting on-screen results.** After 30–60 seconds, photograph the entire
+`DAISY RPM:` / `DAISY TOUCH:` block, particularly the per-rail vote results,
+fresh L10/L6 snapshots, `RPM r... rails-ready...`, GPIO levels and identity.
+The success targets are `RPM r0 rails-ready1` followed by
+`GPIO id r0 reg9f stage7 id5422`. A failed request or ready readback holds reset
+low; those diagnostics must not be interpreted as an attempted GPIO ID read.
+Neither successful fastboot nor CI establishes successful RPM or touchscreen
+hardware operation.
