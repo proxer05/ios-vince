@@ -415,4 +415,40 @@ STOP), finite stretching, slave NACK at each transmit byte, stuck lines,
 bounded recovery/retries, unpublished failed reads, released outputs, reset
 timing, exclusive selection, no QUP accesses, and observer-only read commands.
 Missing mappings, unsupported arbiter versions, APIDs above 255, denied reads
-and read timeouts are exercised too. **0186 CI and device results pending.**
+and read timeouts are exercised too. Host tests and CI pass; **0186 device
+results are pending.**
+
+### GPIO diagnostic image — 2026-10-29
+
+CI run [40912830845](https://github.com/proxer05/ios-vince/actions/runs/40912830845)
+passed for commit `a6c26c98b92978f8e1aa472a9addb73f7578b77e`, retaining
+`MACHINE_CONFIG=VINCE`. The build log confirms 0186 applied, and the linked
+Bluetooth, QUP, GPIO and rail diagnostic marker checks passed. The downloaded
+kernel matches its CI `SHA256SUMS`.
+
+- Kernel: `artifacts/kernel-0186/kernel.development.vince`.
+- Kernel SHA-256: `7041f9f3ded1454d1b542df332c6b01509e13338c817074b188c7d315abd2227`.
+- Image: `artifacts/daisy-touch-gpio-0186/daisy-boot.img` (17,901,568 bytes).
+- Image SHA-256: `b9814158c8a2d87144a835ad10a664d24c3e55b4c897fb15a3711f74b277ce68`.
+- Logs: `artifacts/daisy-touch-dev/ci-build-0186.log` and `build-image-0186.log`.
+
+```sh
+VINCE_NO_FBCON=0 \
+DTB="$PWD/artifacts/daisy-dtb.bin" \
+PAYLOAD_CMDLINE='debug=0xc serial=3 cpus=1 keepsyms=1 io=0x3f -noprogress wdt=-1 wdt_test=no_user_checkin rd=mmcroot0 mmcrw=1 rootrw=1 unentitled_ios_sim_launch=1 launchd_unsecure_cache=1 ignition_level=1 vincefix=bluetool vincetouch=0 vincekeys=1 daisytouch=1 daisytouch_probe=1 daisytouch_gpio=1 startup_debug=0 -disable_kprintf' \
+tools/build_daisy.sh artifacts/kernel-0186/kernel.development.vince artifacts/daisy-touch-gpio-0186
+fastboot -s 6790a29e0305 boot artifacts/daisy-touch-gpio-0186/daisy-boot.img
+```
+
+Verified the assembled boot header, appended DTBs, empty `second`, embedded
+ADT, RAM base/size, console/physical geometry, logical canvas, artwork
+properties and exact GPIO-only cmdline. The ADT matches 0185 except for its
+fresh random seed; product traits match the confirmed homescreen baseline.
+Fastboot reported successful transfer and temporary boot.
+
+**Awaiting the on-screen result.** Photograph the `DAISY TOUCH: L10`, `L6`,
+`GPIO SDA...`, and `GPIO id...` lines after 30–60 seconds. Successful identity
+should contain `GPIO id r0 reg9f stage7 id5422`; a following firmware/vendor
+line reports each read's own status. A GPIO success proves identity transport
+only, not a working report decoder or iOS touch. The 0185 comparison result
+has not been supplied and must not be inferred from this boot.
