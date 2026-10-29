@@ -29,6 +29,7 @@ def main():
             "0181-vince-adreno-506-bringup.patch", "0184-daisy-ft5446-probe.patch",
             "0185-daisy-vince-touch-crosscheck.patch",
             "0186-daisy-gpio-touch-diagnostic.patch",
+            "0187-daisy-touch-rpm-power.patch",
         ):
             subprocess.run([
                 "git", "-C", str(work), "apply", "--include=bsd/dev/vince_input.c",

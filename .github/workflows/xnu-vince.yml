@@ -85,6 +85,7 @@ jobs:
               b'DAISY TOUCH: FT5446 id', b'DAISY TOUCH: report63', b'daisytouch_probe',
               b'DAISY TOUCH: STOP %uK', b'DAISY TOUCH: RESTART %uK',
               b'daisytouch_gpio', b'DAISY TOUCH: GPIO id r', b'DAISY TOUCH: L%u p%x',
+              b'daisytouch_power', b'DAISY RPM: power result', b'DAISY TOUCH: RPM r%d rails-ready',
           ):
               if marker not in data:
                   raise SystemExit(f'{kernel}: missing daisy fix marker {marker!r}')

@@ -1,0 +1,346 @@
+diff --git a/bsd/conf/files b/bsd/conf/files
+--- a/bsd/conf/files
++++ b/bsd/conf/files
+@@ -114,3 +114,4 @@
+ bsd/dev/vince_mmc.c			standard
+ bsd/dev/vince_input.c			standard
++bsd/dev/daisy_touch_rpm.c			standard
+ bsd/dev/vince_ctl.c			standard
+diff --git a/bsd/dev/daisy_touch_rpm.c b/bsd/dev/daisy_touch_rpm.c
+new file mode 100644
+--- /dev/null
++++ b/bsd/dev/daisy_touch_rpm.c
+@@ -0,0 +1,268 @@
++/*
++ * Daisy FT5446 supplies, opt-in and called once by the sole input thread.
++ * Legacy SMD RPM channel, not the byte-flag Pronto transport in vince_smd.c.
++ * References: Linux v6.12 {qcom_smd.c,smd-rpm.c,qcom_smd-regulator.c};
++ * grinkodbogdan/rpiios 15fc60d's redwood_tissot_rpm.c. The doorbell is from
++ * Daisy's recovered DT: 0x0b011008 bit 0 (not the reference's 0x0b111008).
++ * Only two active-set votes: L10 2.85 V, then L6 1.8 V. No PMIC writes,
++ * sleep votes, L5 changes, voltage guessing, or automatic request retries.
++ */
++#if defined(ARM64_BOARD_CONFIG_VINCE)
++#include <sys/param.h>
++#include <sys/systm.h>
++#include <kern/clock.h>
++#include <kern/thread.h>
++#include <kern/sched_prim.h>
++#include <machine/machine_routines.h>
++
++extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
++int daisy_touch_power_on(void);
++
++#define DR_SMEM 0x86300000u
++#define DR_SIZE 0x100000u
++#define DR_IPC 0x0b011008u
++#define DR_REQ 0x00716572u
++#define DR_MSGID 0x2367736du
++#define DR_ERR 0x00727265u
++#define DR_HALF 44u
++#define DR_STATE 0u
++#define DR_DSR 4u
++#define DR_CTS 8u
++#define DR_CD 12u
++#define DR_RI 16u
++#define DR_FHEAD 20u
++#define DR_FTAIL 24u
++#define DR_FSTATE 28u
++#define DR_MASK 32u
++#define DR_TAIL 36u
++#define DR_HEAD 40u
++#define DR_OPENING 1u
++#define DR_OPENED 2u
++static vm_offset_t dr_smem, dr_ipc, dr_tx, dr_rx, dr_out, dr_in;
++static uint32_t dr_half, dr_id;
++static int dr_wait, dr_result = -1;
++static bool dr_attempted;
++
++static uint32_t
++dr_rd(vm_offset_t base, uint32_t off)
++{
++	uint32_t v = *(volatile uint32_t *)(base + off);
++	__asm__ volatile("dmb oshld" ::: "memory");
++	return v;
++}
++
++static void
++dr_wr(vm_offset_t base, uint32_t off, uint32_t value)
++{
++	__asm__ volatile("dmb oshst" ::: "memory");
++	*(volatile uint32_t *)(base + off) = value;
++	__asm__ volatile("dsb osh" ::: "memory");
++}
++
++static void
++dr_sleep(void)
++{
++	uint64_t deadline;
++	clock_interval_to_deadline(5, NSEC_PER_MSEC, &deadline);
++	(void)assert_wait_deadline(&dr_wait, THREAD_UNINT, deadline);
++	thread_block(THREAD_CONTINUE_NULL);
++}
++
++static void
++dr_signal(void)
++{
++	dr_wr(dr_ipc, DR_IPC & 0xfffu, 1);
++}
++
++/* Legacy allocations only; reject external/unaligned/out-of-range items. */
++static vm_offset_t
++dr_item(unsigned item, uint32_t *size)
++{
++	if (item >= 419) { return 0; }
++	unsigned info = 208 + 16 * item;
++	if (!dr_rd(dr_smem, info)) { return 0; }
++	uint32_t off = dr_rd(dr_smem, info + 4), n = dr_rd(dr_smem, info + 8);
++	uint32_t ext = dr_rd(dr_smem, info + 12) & ~3u;
++	if ((ext && ext != DR_SMEM) || !n || n > DR_SIZE || off < 0x2000 || off > DR_SIZE - n || ((off | n) & 3u)) {
++		return 0;
++	}
++	vm_offset_t map = ml_io_map(DR_SMEM + (off & ~0xfffu), ((off & 0xfffu) + n + 0xfffu) & ~0xfffu);
++	if (!map) { return 0; }
++	*size = n;
++	return map + (off & 0xfffu);
++}
++
++static int
++dr_open(void)
++{
++	uint32_t size = 0, cid = 64;
++	dr_smem = ml_io_map(DR_SMEM, 0x2000);
++	dr_ipc = ml_io_map(DR_IPC & ~0xfffu, 0x1000);
++	if (!dr_smem || !dr_ipc) { return -1; }
++	vm_offset_t table = dr_item(13, &size);
++	if (!table) { return -1; }
++	for (unsigned i = 0; i < 64 && 32 * (i + 1) <= size; i++) {
++		char name[20];
++		unsigned off = 32 * i;
++		for (unsigned j = 0; j < 20; j += 4) {
++			uint32_t v = dr_rd(table, off + j);
++			memcpy(name + j, &v, 4);
++		}
++		uint32_t flags = dr_rd(table, off + 24);
++		if (!memcmp(name, "rpm_requests", sizeof("rpm_requests")) && (flags & 0x3ffu) == 0x20fu &&
++		    dr_rd(table, off + 28)) {
++			cid = dr_rd(table, off + 20);
++			break;
++		}
++	}
++	if (cid >= 64) { return -1; }
++	dr_tx = dr_item(14 + cid, &size);
++	if (!dr_tx || size != 2 * DR_HALF) { return -1; }
++	dr_rx = dr_tx + DR_HALF;
++	dr_out = dr_item(338 + cid, &size);
++	if (!dr_out || size < 256 || (size & (size - 1))) { return -1; }
++	dr_half = size / 2;
++	dr_in = dr_out + dr_half;
++	printf("DAISY RPM: cid%u half%u states%u/%u ipc%x\n", cid, dr_half,
++	    dr_rd(dr_tx, DR_STATE), dr_rd(dr_rx, DR_STATE), DR_IPC);
++	/* Reset only fields owned by apps, as Linux qcom_smd_channel_reset does. */
++	dr_wr(dr_tx, DR_STATE, 0);
++	for (unsigned off = DR_DSR; off <= DR_FTAIL; off += 4) { dr_wr(dr_tx, off, 0); }
++	dr_wr(dr_tx, DR_FSTATE, 1);
++	dr_wr(dr_tx, DR_MASK, 1);
++	dr_wr(dr_tx, DR_HEAD, 0);
++	dr_wr(dr_rx, DR_TAIL, 0);
++	dr_signal();
++	dr_wr(dr_tx, DR_STATE, DR_OPENING);
++	dr_wr(dr_tx, DR_FSTATE, 1);
++	dr_signal();
++	for (unsigned i = 0; i < 200; i++) {
++		uint32_t state = dr_rd(dr_rx, DR_STATE);
++		if (state == DR_OPENING || state == DR_OPENED) { break; }
++		if (i == 199) { return -2; }
++		dr_sleep();
++	}
++	dr_wr(dr_tx, DR_DSR, 1);
++	dr_wr(dr_tx, DR_CTS, 1);
++	dr_wr(dr_tx, DR_CD, 1);
++	dr_wr(dr_tx, DR_STATE, DR_OPENED);
++	dr_wr(dr_tx, DR_FSTATE, 1);
++	dr_signal();
++	for (unsigned i = 0; i < 200; i++) {
++		if (dr_rd(dr_rx, DR_STATE) == DR_OPENED) {
++			dr_wr(dr_rx, DR_FSTATE, 0);
++			return 0;
++		}
++		dr_sleep();
++	}
++	return -2;
++}
++
++static bool
++dr_indices(vm_offset_t info, uint32_t *head, uint32_t *tail)
++{
++	*head = dr_rd(info, DR_HEAD);
++	*tail = dr_rd(info, DR_TAIL);
++	return dr_half && *head < dr_half && *tail < dr_half && !((*head | *tail) & 3u) &&
++	       dr_rd(dr_rx, DR_STATE) == DR_OPENED;
++}
++
++/* Return 0 for this ACK, 1 for another request, or a negative error. */
++static int
++dr_ack(const uint32_t *p, unsigned bytes, uint32_t expected)
++{
++	if (bytes < 20 || (bytes & 3u) || p[0] != DR_REQ || p[1] != bytes - 8) { return -6; }
++	bool found = false, error = false;
++	uint32_t id = 0;
++	for (unsigned off = 8; off < bytes;) {
++		if (bytes - off < 8) { return -6; }
++		uint32_t key = p[off / 4], n = p[off / 4 + 1];
++		if (n > bytes - off - 8 || ((n + 3) & ~3u) > bytes - off - 8) { return -6; }
++		if (key == DR_MSGID && n == 4 && !found) {
++			found = true;
++			id = p[off / 4 + 2];
++		} else if (key == DR_ERR && n) {
++			error = true;
++		} else { return -6; }
++		off += 8 + ((n + 3) & ~3u);
++	}
++	if (!found) { return -6; }
++	return id != expected ? 1 : (error ? -7 : 0);
++}
++
++static int
++dr_vote(unsigned ldo, uint32_t uv)
++{
++	if (!((ldo == 10 && uv == 2850000) || (ldo == 6 && uv == 1800000))) { return -9; }
++	uint32_t id = ++dr_id;
++	uint32_t packet[] = {52, 0, 0, 0, 0, DR_REQ, 44, id, 0, 0x616f646c, ldo, 24,
++	    0x6e657773, 4, 1, 0x00007675, 4, uv};
++	uint32_t head, tail;
++	unsigned sent = 0;
++	for (unsigned i = 0; i < 200; i++) {
++		if (!dr_indices(dr_tx, &head, &tail)) { return -3; }
++		unsigned used = (head - tail) & (dr_half - 1);
++		if (dr_half - 4 - used >= sizeof(packet)) { sent = 1; break; }
++		dr_wr(dr_tx, DR_MASK, 0);
++		dr_sleep();
++	}
++	dr_wr(dr_tx, DR_MASK, 1);
++	if (!sent) { return -4; }
++	dr_wr(dr_tx, DR_FTAIL, 0);
++	for (unsigned i = 0; i < sizeof(packet) / 4; i++) {
++		dr_wr(dr_out, head, packet[i]);
++		head = (head + 4) & (dr_half - 1);
++	}
++	dr_wr(dr_tx, DR_HEAD, head);
++	dr_wr(dr_tx, DR_FHEAD, 1);
++	dr_signal();
++	unsigned replies = 0;
++	for (unsigned i = 0; i < 400; i++) {
++		if (!dr_indices(dr_rx, &head, &tail)) { return -3; }
++		unsigned avail = (head - tail) & (dr_half - 1);
++		if (avail >= 20) {
++			unsigned bytes = dr_rd(dr_in, tail);
++			if (bytes < 20 || bytes > 256 || (bytes & 3u) || bytes + 20 >= dr_half) { return -6; }
++			if (avail >= bytes + 20) {
++				uint32_t answer[64];
++				tail = (tail + 20) & (dr_half - 1);
++				for (unsigned j = 0; j < bytes / 4; j++) {
++					answer[j] = dr_rd(dr_in, tail);
++					tail = (tail + 4) & (dr_half - 1);
++				}
++				dr_wr(dr_rx, DR_FHEAD, 0);
++				dr_wr(dr_rx, DR_TAIL, tail);
++				dr_wr(dr_rx, DR_FTAIL, 1);
++				dr_signal();
++				int r = dr_ack(answer, bytes, id);
++				if (r <= 0) {
++					printf("DAISY RPM: L%u uv%u id%u r%d ack %x/%x/%x\n", ldo, uv, id, r,
++					    answer[0], answer[1], answer[2]);
++					return r;
++				}
++				if (++replies == 8) { return -8; }
++			}
++		}
++		dr_sleep();
++	}
++	return -5;
++}
++
++int
++daisy_touch_power_on(void)
++{
++	/* Single call from the exclusive GPIO probe; never race other RPM users. */
++	if (dr_attempted) { return dr_result; }
++	dr_attempted = true;
++	dr_result = dr_open();
++	if (!dr_result) { dr_result = dr_vote(10, 2850000); }
++	if (!dr_result) { dr_result = dr_vote(6, 1800000); }
++	printf("DAISY RPM: power result %d\n", dr_result);
++	if (dr_result && dr_tx && dr_rx) {
++		printf("DAISY RPM: state%u/%u tx%u/%u rx%u/%u\n",
++		    dr_rd(dr_tx, DR_STATE), dr_rd(dr_rx, DR_STATE), dr_rd(dr_tx, DR_HEAD),
++		    dr_rd(dr_tx, DR_TAIL), dr_rd(dr_rx, DR_HEAD), dr_rd(dr_rx, DR_TAIL));
++	}
++	return dr_result;
++}
++#endif
+diff --git a/bsd/dev/vince_input.c b/bsd/dev/vince_input.c
+--- a/bsd/dev/vince_input.c
++++ b/bsd/dev/vince_input.c
+@@ -29,3 +29,5 @@
+  * QUP initialization and daisytouch_diag. All Daisy options default off.
+  * GPIO mode leaves SDA/SCL released as inputs after its bounded probe.
++ * daisytouch_power=1 additionally requests the two touch supplies via RPM;
++ * it only takes effect with daisytouch=1 daisytouch_gpio=1, and defaults off.
+  */
+@@ -42,5 +44,6 @@
+ extern void sweet_hid_key(int key, int down);
+ extern void sweet_hid_touch(int finger, int down, int x, int y);
+ void vince_input_start(void);
+ extern void vince_adreno_init(void);
++extern int daisy_touch_power_on(void);
+ 
+@@ -122,3 +125,3 @@
+ static int daisy_touch, daisy_probe;
+-static int daisy_diag, daisy_gpio;
++static int daisy_diag, daisy_gpio, daisy_power;
+ static uint32_t qup_last_bus_error, qup_last_error;
+@@ -605,3 +608,3 @@
+  * redwood_tissot_touch.c (GPIO I2C) and redwood_tissot_buttons.c (SPMI v2).
+- * Daisy uses L10/L6 only. No RPM votes or PMIC/controller register writes.
++ * Daisy uses L10/L6 only; daisytouch_power=1 adds explicit RPM votes.
+  * Unlike that reference, every SCL timeout (including receive and STOP)
+@@ -850,6 +853,33 @@
+ 	fts_gpio_line(GPIO_SCL, true);
+ 	tlmm_cfg(GPIO_ATTN, 0, 3, 0, false, false);
+ 	tlmm_cfg(GPIO_RST, 0, 0, 3, true, false);
++	if (daisy_power) {
++		int r = 0;
++		for (unsigned rail = 0; rail < 2; rail++) {
++			uint8_t type = 0;
++			if (fts_rail_read(fts_rail_obs[rail], 4, &type) || type != 0x21) { r = -10; }
++		}
++		if (!r) { r = daisy_touch_power_on(); }
++		in_sleep(&touch_chan, 20);
++		bool ready = true;
++		for (unsigned rail = 0; rail < 2; rail++) {
++			uint8_t status = 0, enable = 0;
++			if (fts_rail_read(fts_rail_obs[rail], 8, &status) ||
++			    fts_rail_read(fts_rail_obs[rail], 0x46, &enable) ||
++			    !(status & 0x80) || !(enable & 0x80)) { ready = false; }
++		}
++		fts_rail_summary();
++		printf("DAISY TOUCH: RPM r%d rails-ready%u\n", r, ready);
++		if (r || !ready) {
++			/* Keep reset asserted; repeat evidence, never repeat power votes. */
++			for (unsigned i = 0; daisy_probe && i < 2; i++) {
++				in_sleep(&touch_chan, 30000);
++				fts_rail_summary();
++				printf("DAISY TOUCH: RPM r%d rails-ready%u; reset held\n", r, ready);
++			}
++			return;
++		}
++	}
+ 	in_sleep(&touch_chan, 20);
+ 	tlmm_cfg(GPIO_RST, 0, 0, 3, true, true);
+ 	in_sleep(&touch_chan, 200);
+@@ -1017,3 +1047,4 @@
+ 	(void)PE_parse_boot_argn("daisytouch_diag", &daisy_diag, sizeof(daisy_diag));
+ 	(void)PE_parse_boot_argn("daisytouch_gpio", &daisy_gpio, sizeof(daisy_gpio));
++	(void)PE_parse_boot_argn("daisytouch_power", &daisy_power, sizeof(daisy_power));
+ 	tlmm = ml_io_map(TLMM_PA, TLMM_SIZE);

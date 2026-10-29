@@ -452,3 +452,83 @@ should contain `GPIO id r0 reg9f stage7 id5422`; a following firmware/vendor
 line reports each read's own status. A GPIO success proves identity transport
 only, not a working report decoder or iOS touch. The 0185 comparison result
 has not been supplied and must not be inferred from this boot.
+
+## 0186 observed rails / opt-in RPM power (0187)
+
+User-transcribed 0186 results:
+
+```text
+DAISY TOUCH: GPIO id ... stage2 ... tries3
+DAISY TOUCH: L10 p149 r0 type 21/01 st08 en00 v00/54
+DAISY TOUCH: L6 p145 r0 type 21/00 st02 en00 v00/00
+```
+
+The exact GPIO ID line was not legible enough to treat as a complete record;
+it appears consistent with `r-2 rega3 stage2 id0000 tries3` (write-address NACK).
+L10's `en00` was transcribed as `an00`; the original photograph has not been
+supplied. Both rails report successful observer reads and clear software-enable
+and ready bits, strongly supporting missing supplies after fastboot. The full
+GPIO SDA/SCL/reset/IRQ-level line is still needed. The older QUP failure lines
+were also transcribed, but do not establish an 0185 STOP/RESTART outcome.
+
+`0187-daisy-touch-rpm-power.patch` adds a separate, opt-in legacy SMD RPM client
+in `bsd/dev/daisy_touch_rpm.c`. It is only called from the GPIO probe when all
+three selectors are set:
+
+```text
+daisytouch=1 daisytouch_gpio=1 daisytouch_power=1
+```
+
+All remain off by default. It requests only the active-set `ldoa` L10 2.85 V
+and L6 1.8 V supplies named by Daisy's recovered FT5446 DT. Each request contains
+`swen=1` and `uv=<target>`; L10 precedes L6 as in the vendor driver's VDD/IOVCC
+enable order. No L5, sleep votes, direct PMIC writes, or touchscreen firmware /
+configuration writes are made. It still emits no HID events.
+
+Unlike the Mi A1 reference, Daisy's recovered `qcom,smd-rpm` node uses the SMEM
+parent IRQ register `0x0b011008`, offset 0, bitmask 1, edge 15. The Mi A1 code's
+`0x0b111008` is **not** used. This differs from Pronto's bit 17 at the same Daisy
+register. Linux v6.12 `qcom_smd.c`, `smd-rpm.c` and `qcom_smd-regulator.c` were
+cross-checked; local references are in
+`artifacts/daisy-touch-identification/rpm-reference/`.
+
+The client validates legacy SMEM allocation bounds and alignment, exact
+`rpm_requests` name / edge / packet type / reference count, CID bounds, the
+88-byte word-flag channel info and power-of-two FIFO size before modifying
+channel state. The CLOSED/OPENING/OPENED handshake and later MMIO writes touch
+only locally owned fields. TX capacity includes the 20-byte SMD header and a
+one-word gap; ring indices and lengths are checked before access, including
+wraparound. Replies must have a bounded complete SMD packet, matching service
+and payload lengths, well-formed records, and one matching request-ID record.
+RPM error records fail the request. Stale IDs are consumed but never accepted
+as the current ACK; processing is bounded. Open/TX-space/ACK waits are bounded
+at roughly 1/1/2 seconds respectively, with 5 ms kernel-thread sleeps rather
+than a multi-second busy spin. Votes are attempted once per boot, not retried.
+
+Before voting, the GPIO path requires readable ULT-LDO type `0x21` for both
+observer channels. It holds reset low during RPM initialization and requests.
+Afterwards it reads enable/ready bit 7 on each rail and prints fresh raw rail
+snapshots. Only successful replies **and** ready/enabled readback permit the
+vendor reset/settling sequence and GPIO identity retry. Failures leave reset
+low and SDA/SCL released, with optional repeated diagnostics but no repeated
+votes. A successful L10 vote followed by a failed L6 vote may leave L10 enabled;
+there is deliberately no speculative rollback. RPM/readback success is still
+not a measured voltage or proof of working touch.
+
+New summary lines include `DAISY RPM: cid...`, per-vote `L10/L6 uv... id... r...`,
+`power result ...`, and `DAISY TOUCH: RPM r... rails-ready...`. RPM errors:
+`-1` map/layout, `-2` channel-open timeout, `-3` invalid indices/disconnected,
+`-4` no TX space, `-5` ACK timeout, `-6` malformed reply, `-7` RPM error,
+`-8` too many stale IDs, `-9` non-whitelisted vote. The GPIO caller's `-10`
+means missing/unreadable/unexpected rail type, with no RPM request made.
+
+Host tests cover the actual RPM C with a deterministic legacy-SMEM/SMD peer:
+allocation/name/type/CID/layout/map rejection, exclusive field writes,
+handshake failure, exact voltage/enable requests, full/wrapped FIFOs,
+invalid indices, delayed/missing/malformed/error/stale-ID replies, and no
+duplicate calls/retries. Existing input tests additionally verify the default
+and selector behavior, pre-vote type checks, reset-held failures and successful
+GPIO identity after ready readback. GCC sanitizers pass both suites; device
+behavior and XNU SDK compatibility still require CI/hardware validation.
+
+**0187 CI/image/device results pending.**

@@ -3,10 +3,13 @@ static uint32_t regs[0x500 / 4], gpio[TLMM_SIZE / 4], tags[2];
 static unsigned tag_count, resets, delivered, released, limit, svc_acks;
 static unsigned sleeps[16], nsleeps, starts, qup_accesses, qup_maps;
 static bool running, nack, late_nack, stuck_bus, missing_done, bad_state;
-static int boot_vince, boot_daisy, boot_probe, boot_gpio;
+static int boot_vince, boot_daisy, boot_probe, boot_gpio, boot_power;
 static uint32_t arb_version, observer_status, observer_reg;
 static unsigned observer_reads;
 static bool observer_missing, observer_map_fail, arb_map_fail;
+static bool power_ready, power_bad_type;
+static unsigned power_calls;
+static int power_result;
 static void (*started_fn)(void *, wait_result_t);
 
 static void
@@ -23,10 +26,13 @@ fresh(void)
 	memset(&wire, 0, sizeof(wire));
 	limit = 255;
 	running = nack = late_nack = stuck_bus = missing_done = bad_state = false;
-	boot_vince = boot_daisy = boot_probe = boot_gpio = 0;
+	boot_vince = boot_daisy = boot_probe = boot_gpio = boot_power = 0;
+	power_ready = power_bad_type = false;
+	power_calls = 0;
+	power_result = 0;
 	started_fn = NULL;
 	input_started = false;
-	daisy_touch = daisy_probe = daisy_diag = daisy_gpio = 0;
+	daisy_touch = daisy_probe = daisy_diag = daisy_gpio = daisy_power = 0;
 	qup_last_bus_error = qup_last_error = 0;
 	qup = 1;
 	tlmm = 2;
@@ -60,6 +66,10 @@ mock_rd(vm_offset_t base, uint32_t off)
 	if (base == 5 || base == 6) {
 		if (off == 8) { return observer_status; }
 		assert(off == 0x18);
+		if (daisy_power) {
+			if (observer_reg == 4) { return power_bad_type ? 0 : 0x21; }
+			if (observer_reg == 8 || observer_reg == 0x46) { return power_ready ? 0x80 : 0; }
+		}
 		return observer_reg ^ (base == 5 ? 0x10 : 0x06);
 	}
 	qup_accesses++;
@@ -191,6 +201,12 @@ void sweet_hid_touch(int f, int d, int x, int y)
 	assert(false && "probe must not dispatch HID");
 }
 void vince_adreno_init(void) {}
+int daisy_touch_power_on(void)
+{
+	assert(!(gpio[GPIO_IO(GPIO_RST) / 4] & 2));
+	power_calls++;
+	return power_result;
+}
 static bool PE_parse_boot_argn(const char *key, void *p, int size)
 {
 	assert(size == sizeof(int));
@@ -200,6 +216,7 @@ static bool PE_parse_boot_argn(const char *key, void *p, int size)
 	else if (!strcmp(key, "daisytouch")) { *out = boot_daisy; }
 	else if (!strcmp(key, "daisytouch_probe")) { *out = boot_probe; }
 	else if (!strcmp(key, "daisytouch_gpio")) { *out = boot_gpio; }
+	else if (!strcmp(key, "daisytouch_power")) { *out = boot_power; }
 	else { return false; }
 	return true;
 }
@@ -273,11 +290,11 @@ int main(void)
 	fts_vince_crosscheck();
 	assert(qup_clk_ctl == CLK_CTL_100K && !running);
 	fresh();
-	boot_gpio = boot_probe = 1; /* hints alone never turn touch on */
+	boot_power = boot_gpio = boot_probe = 1; /* hints alone never turn touch on */
 	vince_input_start();
-	assert(starts == 0);
+	assert(starts == 0 && !power_calls);
 	fresh();
-	boot_vince = boot_gpio = 1; /* GPIO hint does not change the Vince selection */
+	boot_vince = boot_gpio = boot_power = 1; /* hints do not change the Vince selection */
 	vince_input_start();
 	assert(starts == 1 && started_fn == touch_thread);
 	fresh();
@@ -366,6 +383,27 @@ int main(void)
 	fts_probe_thread(NULL, 0);
 	assert(!qup_accesses && wire.nbytes == 9 && nsleeps == 10);
 	assert(wire.sda && wire.scl && observer_reads == 36);
+	/* The power option only runs in GPIO mode. Reset cannot release on errors. */
+	for (unsigned fault = 0; fault < 5; fault++) {
+		fresh(); wire_init();
+		boot_daisy = boot_gpio = boot_power = boot_probe = 1;
+		power_ready = true;
+		if (fault == 1) { power_result = -7; }
+		if (fault == 2) { power_ready = false; }
+		if (fault == 3) { power_bad_type = true; }
+		if (fault == 4) { observer_status = 5; }
+		vince_input_start();
+		started_fn(NULL, 0);
+		assert(power_calls == (fault >= 3 ? 0 : 1));
+		assert(!qup_maps && !qup_accesses && wire.sda && wire.scl);
+		if (!fault) {
+			assert(wire.nbytes == 36 && nsleeps == 5);
+			assert(sleeps[0] == 20 && sleeps[1] == 20 && sleeps[2] == 200);
+		} else {
+			assert(!wire.nbytes && nsleeps == 3);
+			assert(!(gpio[GPIO_IO(GPIO_RST) / 4] & 2));
+		}
+	}
 	puts("PASS: QUP/STOP transport, GPIO wire framing/timeouts/NACKs, read-only rails, exclusive selection, reset");
 	return 0;
 }
