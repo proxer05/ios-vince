@@ -1,0 +1,235 @@
+diff --git a/bsd/dev/vince_input.c b/bsd/dev/vince_input.c
+index d1bc96c..0efb801 100644
+--- a/bsd/dev/vince_input.c
++++ b/bsd/dev/vince_input.c
+@@ -20,9 +20,8 @@
+  * page select (0xFF).
+  *
+  * Boot-args: vincekeys=0 / vincetouch=0 turn a source off.
+- * daisytouch=1 selects the FT5446 at 0x38 instead of RMI4. This first
+- * bring-up stage only probes identity and coherent 63-byte reports; it
+- * never sends touch events or writes controller firmware/configuration.
++ * daisytouch=1 selects the FT5446 at 0x38 instead of RMI4. By default it
++ * only probes identity/reports. No controller firmware/configuration writes.
+  * daisytouch_probe=1 repeats the summary at 30 and 60 seconds for console
+  * observation. daisytouch_gpio=1 selects an independent GPIO identity-only
+  * probe with read-only L10/L6 snapshots; it needs daisytouch=1 and bypasses
+@@ -38,6 +37,9 @@
+  * It changes no bus delays or polling policy, and is disabled by default.
+  * daisytouch_busywait=1 uses local counter-spinning for GPIO bit delays only.
+  * Generic XNU delay() may sleep/WFE; this test avoids that timing granularity.
++ * daisytouch_hid=1 continuously delivers valid reports to SweetHID, dropping
++ * entire malformed frames and releasing stale contacts after 150 ms. Requires
++ * GPIO, power and busywait options; omit daisytouch_reports. Default off.
+  */
+ #if defined(ARM64_BOARD_CONFIG_VINCE)
+ #include <sys/param.h>
+@@ -134,6 +136,7 @@ static int keys_chan, touch_chan;
+ static int daisy_touch, daisy_probe;
+ static int daisy_diag, daisy_gpio, daisy_power;
+ static int daisy_rpm_diag, daisy_reports, daisy_trace, daisy_busywait;
++static int daisy_hid;
+ static uint32_t qup_last_bus_error, qup_last_error;
+ 
+ static uint32_t
+@@ -1098,10 +1101,157 @@ fts_gpio_capture(void)
+ 	    (unsigned long long)fts_capture_elapsed(start), reads, good, errors, raw, reason);
+ }
+ 
++#define FTS_HID_SLOTS 10u
++#define FTS_HID_STALE_MS 150u
++
++struct fts_hid_frame {
++	unsigned active;
++	uint16_t x[FTS_HID_SLOTS], y[FTS_HID_SLOTS];
++};
++
++struct fts_hid_state {
++	struct fts_hid_frame frame;
++	uint64_t last_valid, stale;
++};
++
++/* Same strict rules as analyze_daisy_reports.py. Validate the entire report
++ * before publishing any slot, even if its first record looks usable.
++ * Codes: length=1, mode=2, count=3, duplicate=4, event=5, bounds=6, active=7.
++ */
++static int
++fts_hid_decode(const uint8_t *data, unsigned len, struct fts_hid_frame *out)
++{
++	struct fts_hid_frame next = {0};
++	unsigned seen = 0, active = 0;
++	if (!data || len != FTS_REPORT_LEN) { return 1; }
++	if (data[0] & 0x70) { return 2; }
++	unsigned count = data[2] & 15;
++	if (count > FTS_HID_SLOTS) { return 3; }
++	for (unsigned off = 3; off < FTS_REPORT_LEN; off += 6) {
++		const uint8_t *p = data + off;
++		unsigned slot = p[2] >> 4, event = p[0] >> 6;
++		if (slot >= FTS_HID_SLOTS) { break; }
++		if (seen & (1u << slot)) { return 4; }
++		seen |= 1u << slot;
++		if (event == 3) { return 5; }
++		unsigned x = ((p[0] & 15u) << 8) | p[1];
++		unsigned y = ((p[2] & 15u) << 8) | p[3];
++		if (x > 1080 || y > 2280) { return 6; }
++		if (event != 1) {
++			next.active |= 1u << slot;
++			next.x[slot] = (uint16_t)x;
++			next.y[slot] = (uint16_t)y;
++			active++;
++		}
++	}
++	if (active != count) { return 7; }
++	*out = next;
++	return 0;
++}
++
++static void
++fts_hid_release(struct fts_hid_state *s)
++{
++	for (unsigned slot = 0; slot < FTS_HID_SLOTS; slot++) {
++		if (s->frame.active & (1u << slot)) {
++			sweet_hid_touch((int)slot, 0, s->frame.x[slot], s->frame.y[slot]);
++		}
++	}
++	s->frame.active = 0;
++}
++
++static void
++fts_hid_expire(struct fts_hid_state *s, uint64_t ms)
++{
++	if (s->frame.active && ms - s->last_valid >= FTS_HID_STALE_MS) {
++		fts_hid_release(s);
++		s->stale++;
++	}
++}
++
++static int
++fts_hid_accept(struct fts_hid_state *s, const uint8_t *data, unsigned len, uint64_t ms)
++{
++	struct fts_hid_frame next;
++	int r = fts_hid_decode(data, len, &next);
++	fts_hid_expire(s, ms);
++	if (r) { return r; }
++	/* Slot IDs, not record positions. Release missing/UP slots before downs. */
++	for (unsigned slot = 0; slot < FTS_HID_SLOTS; slot++) {
++		if ((s->frame.active & ~next.active) & (1u << slot)) {
++			sweet_hid_touch((int)slot, 0, s->frame.x[slot], s->frame.y[slot]);
++		}
++	}
++	for (unsigned slot = 0; slot < FTS_HID_SLOTS; slot++) {
++		if (next.active & (1u << slot)) {
++			/* Retry held contacts too: SweetHID may register after this thread.
++			 * Its existing handler suppresses unchanged events once attached.
++			 * Keep raw panel coordinates; SweetHID owns the display transform.
++			 */
++			sweet_hid_touch((int)slot, 1, next.x[slot], next.y[slot]);
++		}
++	}
++	s->frame = next;
++	s->last_valid = ms;
++	return 0;
++}
++
++static void
++fts_gpio_hid(void)
++{
++	struct fts_hid_state state = {0};
++	uint64_t start = mach_absolute_time(), next_log = 10000;
++	uint64_t reads = 0, valid = 0, dropped = 0, errors = 0;
++	unsigned logged = 0, check = 30000;
++	printf("DAISY HID: enabled slots10 poll20ms stale150ms; malformed frames dropped\n");
++	for (;;) {
++		uint8_t report[FTS_REPORT_LEN];
++		unsigned stage = 0, received = 0;
++		fts_hid_expire(&state, fts_capture_elapsed(start));
++		int r = fts_gpio_read_block(0, report, sizeof(report), &stage, &received);
++		uint64_t ms = fts_capture_elapsed(start);
++		reads++;
++		if (r || received != sizeof(report)) {
++			errors++;
++			fts_hid_expire(&state, ms);
++			if (errors == 1) {
++				printf("DAISY HID: I2C error r%d stage%u got%u\n", r, stage, received);
++			}
++		} else {
++			r = fts_hid_accept(&state, report, received, ms);
++			if (r) {
++				dropped++;
++				if (!(logged & (1u << r))) {
++					printf("DAISY HID: drop reason%d seq%llu count%u\n", r,
++					    (unsigned long long)reads, report[2] & 15);
++					logged |= 1u << r;
++				}
++			} else { valid++; }
++		}
++		if (ms >= next_log) {
++			printf("DAISY HID: ms%llu reads%llu valid%llu dropped%llu errors%llu active%x stale%llu\n",
++			    (unsigned long long)ms, (unsigned long long)reads, (unsigned long long)valid,
++			    (unsigned long long)dropped, (unsigned long long)errors, state.frame.active,
++			    (unsigned long long)state.stale);
++			next_log = ms + 10000;
++		}
++		if (daisy_probe && ms >= check && check <= 60000) {
++			fts_rail_summary();
++			if (!fts_gpio_summary()) {
++				fts_hid_release(&state);
++				printf("DAISY HID: stopped after identity loss; contacts released\n");
++				return;
++			}
++			check += 30000;
++		}
++		in_sleep(&touch_chan, 20);
++	}
++}
++
+ static void
+ fts_gpio_probe(void)
+ {
+-	printf("DAISY TOUCH: GPIO probe 0x38; QUP bypass, no HID\n");
++	printf("DAISY TOUCH: GPIO probe 0x38; QUP bypass, HID gated by identity/power\n");
+ 	fts_rail_init();
+ 	fts_rail_summary(); /* inherited power, before changing pins/reset */
+ 	fts_gpio_line(GPIO_SDA, true);
+@@ -1120,6 +1270,10 @@ fts_gpio_probe(void)
+ 		}
+ 		return;
+ 	}
++	if (daisy_hid == 1 && (daisy_power != 1 || daisy_busywait != 1 || daisy_reports == 1)) {
++		printf("DAISY HID: requires power=1 busywait=1 reports=0; reset held\n");
++		return;
++	}
+ 	if (daisy_reports == 1 && !daisy_power) {
+ 		printf("DAISY REPORT: capture requires daisytouch_power=1; reset held\n");
+ 		return;
+@@ -1156,6 +1310,11 @@ fts_gpio_probe(void)
+ 	tlmm_cfg(GPIO_RST, 0, 0, 3, true, true);
+ 	in_sleep(&touch_chan, 200);
+ 	bool identity = fts_gpio_summary();
++	if (daisy_hid == 1) {
++		if (identity) { fts_gpio_hid(); }
++		else { printf("DAISY HID: blocked by identity\n"); }
++		return;
++	}
+ 	if (daisy_reports == 1) {
+ 		if (identity) { fts_gpio_capture(); }
+ 		else { printf("DAISY REPORT: capture blocked by identity\n"); }
+@@ -1177,6 +1336,10 @@ fts_probe_thread(void *arg, wait_result_t result)
+ 	int r = -1;
+ 	(void)arg;
+ 	(void)result;
++	if (daisy_hid == 1 && daisy_gpio != 1) {
++		printf("DAISY HID: requires daisytouch_gpio=1\n");
++		goto out;
++	}
+ 	if (daisy_reports == 1 && !daisy_gpio) {
+ 		printf("DAISY REPORT: capture requires daisytouch_gpio=1\n");
+ 		goto out;
+@@ -1321,6 +1484,7 @@ vince_input_start(void)
+ 	(void)PE_parse_boot_argn("daisytouch_reports", &daisy_reports, sizeof(daisy_reports));
+ 	(void)PE_parse_boot_argn("daisytouch_trace", &daisy_trace, sizeof(daisy_trace));
+ 	(void)PE_parse_boot_argn("daisytouch_busywait", &daisy_busywait, sizeof(daisy_busywait));
++	(void)PE_parse_boot_argn("daisytouch_hid", &daisy_hid, sizeof(daisy_hid));
+ 	tlmm = ml_io_map(TLMM_PA, TLMM_SIZE);
+ 	if (!tlmm) {
+ 		printf("VINCE INPUT: TLMM mapping failed\n");

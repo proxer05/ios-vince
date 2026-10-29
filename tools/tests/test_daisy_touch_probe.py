@@ -34,6 +34,7 @@ def main():
             "0191-daisy-gpio-report-capture.patch",
             "0192-daisy-report-timing-irq.patch",
             "0193-daisy-gpio-counter-delay.patch",
+            "0194-daisy-filtered-touch-hid.patch",
         ):
             subprocess.run([
                 "git", "-C", str(work), "apply", "--include=bsd/dev/vince_input.c",
@@ -54,7 +55,8 @@ def main():
         c.write_text((TESTS / "daisy_touch_stubs.h").read_text() + "\n" + source +
                      "\n" + (TESTS / "daisy_touch_gpio.c").read_text() +
                      "\n" + (TESTS / "daisy_touch_probe.c").read_text() +
-                     "\n" + (TESTS / "daisy_touch_reports.c").read_text())
+                     "\n" + (TESTS / "daisy_touch_reports.c").read_text() +
+                     "\n" + (TESTS / "daisy_touch_hid.c").read_text())
         binary = work / "test"
         subprocess.run([
             os.environ.get("CC", "cc"), "-std=gnu11", "-O1", "-g", "-Wall", "-Wextra",

@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <setjmp.h>
 typedef uintptr_t vm_offset_t;
 typedef uintptr_t vm_size_t;
 typedef int kern_return_t;
@@ -29,3 +30,4 @@ static void thread_deallocate(thread_t t) { (void)t; }
 static int kernel_thread_start(void (*fn)(void *, wait_result_t), void *, thread_t *);
 static bool PE_parse_boot_argn(const char *, void *, int);
 static void test_gpio_reports(void);
+static void test_gpio_hid(void);

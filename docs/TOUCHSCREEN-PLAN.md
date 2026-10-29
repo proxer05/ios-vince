@@ -8,7 +8,11 @@ GPIO counter delay is hardware-validated: requested 5 us waits measure 5 us,
 and median report reads fall from 31.3 to 8.8 ms. Its contact trace contains
 227 structurally valid frames, including 182 two-contact samples, but two
 reserved events and one count inconsistency still block report coherence.
-Touch HID remains disabled; see the [0193 result](#0193-hardware-result-faster-reads-coherence-still-blocked).
+At the user's request, [0194](#0194-opt-in-filtered-hid-for-springboard) adds
+experimental HID delivery for valid frames, dropping malformed frames. It is
+disabled by default; SpringBoard hardware validation is pending. The
+[0193 result](#0193-hardware-result-faster-reads-coherence-still-blocked) remains
+the evidence for the outstanding report faults.
 
 ## Hardware identified in TWRP — 2026-10-29
 
@@ -1484,3 +1488,58 @@ require exact header/active-record equality, and its event reporting treats
 non-DOWN/non-CONTACT flags as releases; Linux input events alone therefore
 cannot establish raw-report coherence. Native raw capture is still pending.
 The phone remains in temporary TWRP after collection.
+
+### 0194 opt-in filtered HID for SpringBoard
+
+The user requested basic SpringBoard touch while ignoring malformed frames.
+`0194-daisy-filtered-touch-hid.patch` implements that policy with an explicit
+`daisytouch_hid=1` boot argument. This permits experimental delivery of valid
+reports; it does not mark the raw transport/coherence investigation complete.
+
+Required options:
+
+```text
+vincetouch=0 daisytouch=1 daisytouch_gpio=1 daisytouch_power=1 daisytouch_busywait=1 daisytouch_hid=1
+```
+
+Omit `daisytouch_reports=1` in HID mode. Conflicting capture/HID options or
+missing power/busy-wait prerequisites keep reset held. GPIO is required;
+read-only RPM layout diagnostics retain precedence. The established RPM ACK,
+rail readiness, reset timing and identity/FW/vendor-read gates run before
+entering the HID loop. All new behavior remains disabled by default.
+
+- Read one full 63-byte repeated-START GPIO transaction, then sleep 20 ms.
+  HID runs continuously, with no five-minute or raw-frame-count limit.
+- Validate the entire report before sending any contact: working mode, at
+  most ten contacts, unique slot IDs, events DOWN/UP/CONTACT only, raw
+  coordinates within 1080×2280, and exact header/active-record agreement.
+  These rules match the existing offline analyzer.
+- Drop the entire malformed or failed/partial transaction. A valid first
+  record in an invalid frame cannot move, add or release a finger.
+- Track all ten **slot IDs**, independent of record ordering. Valid reports
+  release explicitly UP or missing slots before delivering active contacts.
+  Pass raw coordinates to the existing `sweet_hid_touch()` display transform.
+- Keep contact state across a short run of dropped frames. At the first poll
+  observing **150 ms without a valid report**, release every held contact
+  once. Later valid reports can start contacts again. Repeated valid holds
+  refresh the deadline and retry delivery if SweetHID registered late.
+- Emit one startup message, one first-occurrence message per malformed reason,
+  one first I²C-error message, and cumulative counters every ten seconds.
+  Counters show reads, valid, dropped, errors, active-slot mask and stale
+  release batches. Raw frame/byte-IRQ tracing belongs to diagnostic mode.
+- Optional `daisytouch_probe=1` retains the 30/60-second rail/identity checks;
+  identity-check failure releases contacts before stopping HID.
+
+Actual-source GCC/Clang ASan/UBSan tests cover ten slots, record reordering,
+explicit/implicit releases, unchanged holds and late service delivery, all
+decoder rejection classes, exact 0193 malformed records, stale-release
+deadlines, and startup configuration/power/identity gates. The edge-driven
+GPIO-to-HID test covers a malformed second record, partial I²C failure,
+bus timeout, recovery to valid contacts, and continued operation beyond five
+minutes. Existing diagnostic tests still reject any HID callback.
+
+Next image uses the normal artwork ADT with `VINCE_NO_FBCON=1`, persistent
+console logging, and the options above. Hardware checks are icon taps,
+left/right page swipes, scrolling and bottom-edge Home/app-switcher gestures.
+Save the next recovery log to `artifacts/console-hid-0194.log` and inspect
+`DAISY HID:` counters plus `SWEET HID: touch` down/up events.
