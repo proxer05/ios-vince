@@ -899,3 +899,55 @@ The user confirmed deliberately rebooting early; normal boots reach the
 lockscreen. This explains why the saved file contains only the first layout
 pass. Early-log persistence is validated. Allow at least 90 seconds on the next
 diagnostic boot before rebooting to recovery for the 30/60-second comparisons.
+
+### 0190 complete lockscreen log
+
+After the user reported reaching the lockscreen and returning to fastboot,
+saved the newer on-device console file before starting the next test:
+`artifacts/console-0190-lockscreen.log`, 174,453 bytes, SHA-256
+`6b38ca78c5062cf934123c30fbc147fb415d98f8f3191d61479608bb193ca92b`.
+
+All three scheduled layout snapshots are present and identical:
+`half400 state0/4 tx120/120 rx78/78 bounds1`, `layout result 0 stage6`.
+The addresses remain `86306718`, `60000`, `60800`. Every L10 read is
+`21/09 st00 en00 v00/54`; every L6 read is `21/2a st82 en80 v00/04`.
+Reset stays asserted, with released SDA/SCL and high IRQ. Later process
+sampler and SpringBoard/backboardd output confirms the logger continues
+past the 30/60-second repeats. The earlier short capture no longer leaves
+a sustained-logging validation gap.
+
+### 0190 power/ACK test with persistent logging
+
+Reused the checksum-verified kernel from CI `40944810745` at `0278296`.
+The new image replaces `daisytouch_rpm_diag=1` with `daisytouch_power=1`,
+retaining `daisylog=1`, GPIO transport, and repeated diagnostics. Omitting
+the layout-only selector is essential because it supersedes the power path.
+
+The existing bounded implementation opens the verified CID4 channel, requests
+L10 at 2.85 V and L6 at 1.8 V, checks matching ACK request IDs/errors, then
+requires both rails enabled/ready before releasing reset and attempting GPIO
+FT5446 identity. Any power/rail failure keeps reset asserted. Touch HID events
+remain disabled; this test does not yet establish 63-byte report transport.
+
+```sh
+VINCE_NO_FBCON=0 \
+DTB="$PWD/artifacts/daisy-dtb.bin" \
+PAYLOAD_CMDLINE='debug=0xc serial=3 cpus=1 keepsyms=1 io=0x3f -noprogress wdt=-1 wdt_test=no_user_checkin rd=mmcroot0 mmcrw=1 rootrw=1 unentitled_ios_sim_launch=1 launchd_unsecure_cache=1 ignition_level=1 vincefix=bluetool vincetouch=0 vincekeys=1 daisytouch=1 daisytouch_probe=1 daisytouch_gpio=1 daisytouch_power=1 startup_debug=0 -disable_kprintf daisylog=1' \
+tools/build_daisy.sh artifacts/kernel-0190/kernel.development.vince artifacts/daisy-touch-power-0190
+fastboot -s 6790a29e0305 boot artifacts/daisy-touch-power-0190/daisy-boot.img
+```
+
+- Image: `artifacts/daisy-touch-power-0190/daisy-boot.img`, 17,928,192 bytes.
+- Image SHA-256: `08ed4938acc7b514cce2110c3562f6be097e01fce8836dada5b30210a69e2711`.
+- Kernel SHA-256: `cf464faa3b28090c6c04591c1f74a914fdb086482f3bd9194d5b2f67676b2d94`.
+- Build log: `artifacts/daisy-touch-dev/build-image-power-0190.log`.
+
+Validated the boot header/hash, appended DTBs, empty `second`, complete
+payload/ADT, every kernel segment and RAM bounds, exact power-test cmdline,
+and linked power/rail/GPIO/logger markers. Fastboot reported successful
+transfer and temporary boot on serial `6790a29e0305` in 0.543 s.
+
+**Hardware result pending.** Allow 90 seconds, return to fastboot, temporarily
+boot TWRP, and save the next console to `artifacts/console-power-0190.log`.
+Required evidence: channel-open result, L10/L6 vote/ACK lines, rail readback,
+`rails-ready`, and any GPIO identity/transfer results and repeated samples.

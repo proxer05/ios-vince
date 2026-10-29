@@ -282,3 +282,21 @@ no-op when a journal exists (`hfs_vnops.c:3214–3236,3262–3264`); full fsync 
 `HFS_FLUSH_FULL`. SleuthKit reads the catalog without replaying pending HFS
 journal transactions. This remains a consideration for future recovery
 captures, rather than an established cause of this deliberately short log.
+
+### 0190 lockscreen run: sustained logging confirmed
+
+The user next reported reaching the lockscreen and returning to fastboot.
+Before replacing the on-device log, temporarily booted TWRP and extracted
+`artifacts/console-0190-lockscreen.log`: **174,453 bytes**, 1,945 lines,
+SHA-256 `6b38ca78c5062cf934123c30fbc147fb415d98f8f3191d61479608bb193ca92b`.
+
+This capture contains the initial layout pass, both scheduled 30/60-second
+repeats, the 90-second process sampler, and later SpringBoard/backboardd
+activity. All three snapshots agree (`state0/4 tx120/120 rx78/78 bounds1`,
+stage 6); L10 remains disabled and L6 enabled/ready. There are no logger-stop
+or RAM-loss markers. Sustained console persistence and recovery extraction
+are now validated on the device for this diagnostic interval.
+
+Returned from TWRP with `adb -s 6790a29e0305 reboot bootloader`, verified
+`product: daisy`, then temporarily booted the opt-in RPM power test described
+in [the touch plan](TOUCHSCREEN-PLAN.md#0190-powerack-test-with-persistent-logging).
