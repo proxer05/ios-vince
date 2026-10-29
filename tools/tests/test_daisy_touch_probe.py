@@ -25,7 +25,10 @@ def main():
         end = next(i for i in range(start, len(lines)) if lines[i].startswith("diff --git "))
         path.write_text("\n".join(line[1:] for line in lines[start:end]) + "\n")
         subprocess.run(["git", "init", "-q", str(work)], check=True)
-        for patch in ("0181-vince-adreno-506-bringup.patch", "0184-daisy-ft5446-probe.patch"):
+        for patch in (
+            "0181-vince-adreno-506-bringup.patch", "0184-daisy-ft5446-probe.patch",
+            "0185-daisy-vince-touch-crosscheck.patch",
+        ):
             subprocess.run([
                 "git", "-C", str(work), "apply", "--include=bsd/dev/vince_input.c",
                 str(ROOT / "xnu/patches" / patch),
@@ -50,7 +53,8 @@ def main():
             "-Werror", "-fsanitize=address,undefined", "-DARM64_BOARD_CONFIG_VINCE",
             str(c), "-o", str(binary),
         ], check=True)
-        subprocess.run([str(binary)], check=True)
+        result = subprocess.run([str(binary)], check=True, stdout=subprocess.PIPE, text=True)
+        print(result.stdout.splitlines()[-1])
 
 
 if __name__ == "__main__":

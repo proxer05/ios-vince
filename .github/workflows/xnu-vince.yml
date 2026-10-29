@@ -83,6 +83,7 @@ jobs:
           for marker in (
               b'/usr/sbin/vince-bt.x', b'bluetoothd stand-in %d, cache: %d replaced',
               b'DAISY TOUCH: FT5446 id', b'DAISY TOUCH: report63', b'daisytouch_probe',
+              b'DAISY TOUCH: STOP %uK', b'DAISY TOUCH: RESTART %uK',
           ):
               if marker not in data:
                   raise SystemExit(f'{kernel}: missing daisy fix marker {marker!r}')

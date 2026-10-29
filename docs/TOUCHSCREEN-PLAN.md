@@ -230,9 +230,18 @@ The packed image's artwork traits, RAM configuration, embedded ADT, appended
 Android DTB and empty `second` field were verified. Phandle numbering shifts
 when the console node is added; the artwork values are unchanged.
 
-Fastboot reported successful transfer and boot. **The on-screen probe outcome
-is still awaiting user observation**, so neither chip identity nor the 63-byte
-transport is yet verified in XNU. Expected summary:
+Fastboot reported successful transfer and boot. The user observed:
+
+```text
+DAISY TOUCH: probe failed -2 id 0000 (expected 5422)
+DAISY TOUCH: check L10/L6 power and QUP3/pins before HID
+```
+
+`-2` is the driver's NACK result. `0000` is the initialized output buffer,
+not a successfully read chip ID. The identity probe failed before the
+63-byte report read; neither identity nor report transport is verified in XNU.
+The hint about power/pins is diagnostic guidance, not a confirmed cause.
+Expected successful summary:
 
 ```text
 DAISY TOUCH: FT5446 id 5422 fw 0c vendor 51
@@ -241,3 +250,48 @@ DAISY TOUCH: report63 0 count ... irq ...; probe only
 
 The summary repeats after 30 and 60 seconds. `report63 0` means transport
 success, not validation of every contact record or proof of iOS touch input.
+
+## Cross-check against the original Vince driver
+
+Compared `0099-vince-input.patch` at its original commit `2c3b1c6` with the
+Daisy source and the FT5446 vendor driver. The later Daisy edits to 0099
+changed the default enable flag and panel height, not the QUP transport.
+The separate `vince-bringup/shim/touch.c` cited in that patch is not present
+in this checkout, so this comparison uses the actual committed XNU driver.
+
+| Area | Vince XNU | Daisy FT5446 requirement / probe |
+| --- | --- | --- |
+| Controller | Synaptics TD4310, RMI4, `0x20` | FT5446, register protocol, `0x38` |
+| QUP / pins | QUP3 `0x078b7000`, SDA 10, SCL 11, reset 64, attention 65 | Same wiring in recovery DT |
+| Pinmux | GPIO 10/11 function 2, no internal pull | Function 2 matches MSM8953's `blsp_i2c3` mux table |
+| Clock | 19.2 MHz source; 400 kHz with 100 kHz fallback | First probe uses Vince's 100 kHz divider |
+| Register read | Register write with STOP, then a new read START; RMI page select as needed | Vendor Linux uses a combined write/read; 0184 implements repeated START |
+| Reset | Drive GPIO 64 high, wait 200 ms | Vendor sequence is low 20 ms, high, wait 200 ms; 0184 follows it |
+| Supplies | No touchscreen regulator enables in `vince_input.c` | Vendor enables `vdd`/L10 and `vcc_i2c`/L6 before reset; 0184 leaves rails unchanged |
+| Reports | RMI F01/F12; four eight-byte records within FIFO limit | Three-byte header + ten six-byte records, 63-byte read |
+
+**Conclusion:** matching MSM8953 wiring supports reusing Vince's bus setup,
+but does not validate either the new repeated-START path or FT5446 power
+retention after fastboot. The NACK cannot yet distinguish these possibilities.
+Neither RMI page selection nor the Synaptics report decoder should be used
+against FT5446.
+
+Patch `0185-daisy-vince-touch-crosscheck.patch` adds an opt-in
+`daisytouch_diag=1` comparison while retaining probe-only behavior:
+
+- Use Vince's existing START–STOP helper at `0x38`, with no RMI page select.
+- Compare STOP-separated and repeated-START chip-ID reads at 100/400 kHz.
+- Show GPIO configuration/input levels and QUP3 core clock registers.
+- Capture raw bus/QUP errors before the error flags are cleared.
+- Restore the original I²C speed after the comparison; no PMIC, controller
+  configuration, or firmware writes are added.
+
+For a failing STOP read, `stage 1` is the `0xa3` register-selection write,
+`stage 2` its read, `stage 3` the `0x9f` register-selection write, and
+`stage 4` its read. The stage labels identify software transactions, not the
+individual wire byte that received a NACK.
+
+Host tests also check that Vince retains its `0x20` address when Daisy is
+not selected, that the diagnostic STOP framing changes only the slave
+address, that error snapshots survive cleanup, and that the original speed
+is restored. **0185 device results are pending.**

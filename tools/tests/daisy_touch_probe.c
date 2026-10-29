@@ -17,7 +17,8 @@ fresh(void)
 	boot_vince = boot_daisy = boot_probe = 0;
 	started_fn = NULL;
 	input_started = false;
-	daisy_touch = daisy_probe = 0;
+	daisy_touch = daisy_probe = daisy_diag = 0;
+	qup_last_bus_error = qup_last_error = 0;
 	qup = 1;
 	tlmm = 2;
 	gcc = 3;
@@ -27,7 +28,8 @@ fresh(void)
 static unsigned
 length(void)
 {
-	return regs[QUP_MX_IN_CNT / 4] + regs[QUP_MX_RD_CNT / 4];
+	return (regs[QUP_CONFIG / 4] & CFG_NO_INPUT) ? 0 :
+	       regs[QUP_MX_IN_CNT / 4] + regs[QUP_MX_RD_CNT / 4];
 }
 
 static uint32_t
@@ -61,7 +63,7 @@ mock_rd(vm_offset_t base, uint32_t off)
 			}
 		}
 		if (delivered == length() && !missing_done) {
-			op |= OP_MX_IN_DONE;
+			op |= OP_MX_IN_DONE | OP_MX_OUT_DONE;
 		}
 		return op;
 	}
@@ -93,6 +95,7 @@ mock_wr(vm_offset_t base, uint32_t off, uint32_t val)
 		resets++;
 		running = false;
 		tag_count = delivered = released = 0;
+		memset(regs, 0, sizeof(regs));
 		regs[QUP_STATE / 4] = ST_RESET;
 		return;
 	}
@@ -102,7 +105,7 @@ mock_wr(vm_offset_t base, uint32_t off, uint32_t val)
 		return;
 	}
 	if (off == QUP_STATE) {
-		running = val == ST_RUN && tag_count == 2;
+		running = val == ST_RUN && tag_count > 0;
 		if (running && !(regs[QUP_IO_MODE / 4] & IO_IN_BLOCK)) {
 			released = length();
 		}
@@ -203,11 +206,28 @@ int main(void)
 		if (i == 5) { bad_state = true; }
 		int r = qup_reg_read(0x38, 0, buf, 63);
 		assert(r == (i < 2 ? -2 : i == 5 ? -1 : -4));
+		if (i < 2) { assert(qup_last_bus_error & I2C_NACK); }
 		assert(!running && resets == 2);
 		nack = late_nack = stuck_bus = missing_done = bad_state = false;
 		limit = 255;
 		assert(qup_reg_read(0x38, 0, buf, 63) == 0);
 	}
+	fresh();
+	/* Original Vince message framing is preserved at either slave address. */
+	for (unsigned is_daisy = 0; is_daisy < 2; is_daisy++) {
+		daisy_touch = is_daisy;
+		uint8_t reg = 0xa3;
+		assert(qup_msg(0, &reg, NULL, 1) == 0);
+		assert(tag_count == 1);
+		assert(tags[0] == ((TAG_START | ((is_daisy ? FTS_ADDR : RMI_ADDR) << 1)) |
+		    ((TAG_STOP | reg) << 16)));
+		assert(qup_msg(1, NULL, buf, 1) == 0);
+		assert(tags[0] == ((TAG_START | ((is_daisy ? FTS_ADDR : RMI_ADDR) << 1) | 1u) |
+		    ((TAG_REC | 1u) << 16)));
+	}
+	qup_clk_ctl = CLK_CTL_100K;
+	fts_vince_crosscheck();
+	assert(qup_clk_ctl == CLK_CTL_100K && !running);
 	fresh();
 	boot_probe = 1; /* hints alone never turn touch on */
 	vince_input_start();
@@ -225,6 +245,6 @@ int main(void)
 	daisy_touch = 1;
 	assert(touch_hw_init());
 	assert(nsleeps == 2 && sleeps[0] == 20 && sleeps[1] == 200);
-	puts("PASS: combined tags, FIFO/block reads, bounds, failures, recovery, selection, reset");
+	puts("PASS: combined/STOP tags, FIFO/block reads, bounds, failures, recovery, selection, reset");
 	return 0;
 }

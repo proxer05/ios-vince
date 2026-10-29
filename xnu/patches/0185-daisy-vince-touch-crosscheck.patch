@@ -1,0 +1,101 @@
+diff --git a/bsd/dev/vince_input.c b/bsd/dev/vince_input.c
+index 76e3a12..d039d74 100644
+--- a/bsd/dev/vince_input.c
++++ b/bsd/dev/vince_input.c
+@@ -117,6 +117,8 @@ static int rmi_page = -1;
+ static bool input_started;
+ static int keys_chan, touch_chan;
+ static int daisy_touch, daisy_probe;
++static int daisy_diag;
++static uint32_t qup_last_bus_error, qup_last_error;
+ 
+ static uint32_t
+ in_rd(vm_offset_t base, uint32_t off)
+@@ -235,6 +237,8 @@ qup_check_err(void)
+ 	if (!be && !qe) {
+ 		return 0;
+ 	}
++	qup_last_bus_error = in_rd(qup, QUP_I2C_STATUS);
++	qup_last_error = in_rd(qup, QUP_ERROR_FLAGS);
+ 	if (qe) {
+ 		in_wr(qup, QUP_ERROR_FLAGS, qe);
+ 	}
+@@ -249,7 +253,7 @@ qup_check_err(void)
+ static int
+ qup_msg(int rd, const uint8_t *tx, uint8_t *rx, uint32_t n)
+ {
+-	uint32_t addr8 = (RMI_ADDR << 1) | (rd ? 1u : 0u);
++	uint32_t addr8 = ((daisy_touch ? FTS_ADDR : RMI_ADDR) << 1) | (rd ? 1u : 0u);
+ 	uint32_t ntx = rd ? 2 : n + 1;
+ 	uint32_t cfg = CFG_I2C, got = 0;
+ 	int r;
+@@ -515,10 +519,61 @@ touch_release_all(void)
+ 	}
+ }
+ 
++static void
++fts_vince_crosscheck(void)
++{
++	uint32_t saved_clk = qup_clk_ctl;
++	printf("DAISY TOUCH: pins SDA %x/%u SCL %x/%u\n",
++	    in_rd(tlmm, GPIO_CTL(GPIO_SDA)), in_rd(tlmm, GPIO_IO(GPIO_SDA)) & 1u,
++	    in_rd(tlmm, GPIO_CTL(GPIO_SCL)), in_rd(tlmm, GPIO_IO(GPIO_SCL)) & 1u);
++	printf("DAISY TOUCH: reset %x/%u irq %x/%u\n",
++	    in_rd(tlmm, GPIO_CTL(GPIO_RST)), in_rd(tlmm, GPIO_IO(GPIO_RST)) & 1u,
++	    in_rd(tlmm, GPIO_CTL(GPIO_ATTN)), in_rd(tlmm, GPIO_IO(GPIO_ATTN)) & 1u);
++	printf("DAISY TOUCH: QUP3 clock cmd %x cfg %x cbcr %x\n",
++	    in_rd(gcc, 0), in_rd(gcc, 4), in_rd(gcc, 0x20));
++	for (unsigned speed = 0; speed < 2; speed++) {
++		uint8_t reg = 0xa3, hi = 0, lo = 0;
++		int r, stage = 1;
++		qup_clk_ctl = speed ? CLK_CTL_400K : CLK_CTL_100K;
++		qup_last_bus_error = qup_last_error = 0;
++		/* Vince's proven STOP-separated path, with only the slave changed. */
++		r = qup_msg(0, &reg, NULL, 1);
++		if (!r) {
++			stage = 2;
++			r = qup_msg(1, NULL, &hi, 1);
++		}
++		if (!r) {
++			reg = 0x9f;
++			stage = 3;
++			r = qup_msg(0, &reg, NULL, 1);
++		}
++		if (!r) {
++			stage = 4;
++			r = qup_msg(1, NULL, &lo, 1);
++		}
++		printf("DAISY TOUCH: STOP %uK r %d stage %d id %02x%02x\n",
++		    speed ? 400 : 100, r, stage, hi, lo);
++		printf("DAISY TOUCH: bus %x qup %x\n", qup_last_bus_error, qup_last_error);
++		hi = lo = 0;
++		qup_last_bus_error = qup_last_error = 0;
++		r = qup_reg_read(FTS_ADDR, 0xa3, &hi, 1);
++		if (!r) {
++			r = qup_reg_read(FTS_ADDR, 0x9f, &lo, 1);
++		}
++		printf("DAISY TOUCH: RESTART %uK r %d id %02x%02x\n",
++		    speed ? 400 : 100, r, hi, lo);
++		printf("DAISY TOUCH: bus %x qup %x\n", qup_last_bus_error, qup_last_error);
++	}
++	qup_clk_ctl = saved_clk;
++}
++
+ static void
+ fts_probe_summary(void)
+ {
+ 	uint8_t hi = 0, lo = 0, fw = 0, vendor = 0, report[FTS_REPORT_LEN];
++	if (daisy_diag) {
++		fts_vince_crosscheck();
++	}
+ 	int r = qup_reg_read(FTS_ADDR, 0xa3, &hi, 1);
+ 	if (!r) {
+ 		r = qup_reg_read(FTS_ADDR, 0x9f, &lo, 1);
+@@ -675,6 +730,7 @@ vince_input_start(void)
+ 	(void)PE_parse_boot_argn("vincetouch", &touch, sizeof(touch));
+ 	(void)PE_parse_boot_argn("daisytouch", &daisy_touch, sizeof(daisy_touch));
+ 	(void)PE_parse_boot_argn("daisytouch_probe", &daisy_probe, sizeof(daisy_probe));
++	(void)PE_parse_boot_argn("daisytouch_diag", &daisy_diag, sizeof(daisy_diag));
+ 	tlmm = ml_io_map(TLMM_PA, TLMM_SIZE);
+ 	if (!tlmm) {
+ 		printf("VINCE INPUT: TLMM mapping failed\n");
