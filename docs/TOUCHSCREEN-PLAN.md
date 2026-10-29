@@ -568,3 +568,101 @@ The success targets are `RPM r0 rails-ready1` followed by
 low; those diagnostics must not be interpreted as an attempted GPIO ID read.
 Neither successful fastboot nor CI establishes successful RPM or touchscreen
 hardware operation.
+
+## 0187 device result / read-only RPM layout diagnostic (0188)
+
+User-transcribed 0187 screen output:
+
+```text
+DAISY TOUCH: GPIO probe 0x36: QUP bypass, no HID
+DAISY TOUCH: rail observer arb 20610000 (read only)
+DAISY TOUCH: L10 p149 r0 type 21/09 st00 en00 v00/54
+DAISY TOUCH: L6 p145 r0 type 21/00 st82 en00 v00/00
+DAISY TOUCH: RPM: power result -1
+DAISY TOUCH: L10 p149 r0 type 21/09 st00 en00 v00/54
+DAISY TOUCH: L6 p145 r0 type 21/2a st82 en00 v00/04
+DAISY TOUCH: RPM r-1 rails-ready0
+```
+
+The linked binary's literal is `GPIO probe 0x38` and RPM messages begin
+`DAISY RPM:`, so `0x36` and `DAISY TOUCH: RPM: power result` are treated as
+photograph/transcription ambiguity, not changes to the configured address or
+code. `power result -1` is unambiguous: 0187 rejected the SMEM/SMD channel
+layout before opening the channel or sending L10/L6 votes. Reset remained low,
+and no GPIO identity transaction followed. Therefore this boot made **no RPM
+power request** and does not establish whether either vote would work.
+
+The observer reports are not yet reliable enough to interpret electrically.
+L10's subtype remained `09`, but L6 changed from `00` to `2a` even though a
+PMIC peripheral subtype cannot change at runtime. L6 `st82` has bit 7 set while
+`en00` is clear; L10 has neither. These are raw register values, not voltages,
+and the inconsistent subtype strongly suggests stale/unstable observer data
+or a transcription issue. The earlier assumptions about both ready bits being
+clear must not be carried forward.
+
+Patch `0188-daisy-rpm-layout-diagnostic.patch` adds a separate read-only mode:
+
+```text
+vincetouch=0 daisytouch=1 daisytouch_gpio=1 daisytouch_rpm_diag=1 daisytouch_probe=1
+```
+
+`daisytouch_rpm_diag` defaults off, requires Daisy GPIO mode, and supersedes
+both `daisytouch_power` and identity probing if they are also present. It maps
+the same regions and reads only SMEM allocation/channel records. It performs
+no SMD state/FIFO writes, no doorbell, no RPM votes, no PMIC writes, no I²C,
+and no HID. GPIO64 remains asserted low; GPIO10/11 remain released. Optional
+diagnostics repeat at 30 and 60 seconds.
+
+The output identifies the exact rejected stage without relaxing a check:
+
+- stage 1: primary SMEM or Daisy IPC mapping;
+- stage 2: primary SMEM item 13 allocation/bounds/mapping;
+- stage 3: no exact `rpm_requests` packet channel for edge 15 in item 13;
+- stage 4: channel-info item `14 + cid` missing or not exactly 88 bytes;
+- stage 5: FIFO item `338 + cid` missing, too small, or not power-of-two;
+- stage 6: layout accepted (still no writes in diagnostic mode).
+
+It prints SMEM heap metadata, item allocation/offset/size/aux-base, bounded
+printable candidate channel records, and selected CID. Names are copied into a
+terminated local buffer; at most eight candidates print per pass. External,
+unaligned, out-of-range and unsupported allocations remain rejected. A later
+patch may support a discovered layout only after its physical region and
+bounds are independently validated.
+
+Linux `qcom_smd.c` scans both legacy allocation tables: item 13 with info/FIFO
+bases 14/338 and item 266 with bases 138/202. 0188 therefore also reports item
+266, its candidates, and the selected channel's item metadata. This secondary
+scan is diagnostic-only: `dr_layout()` and the power path still accept only the
+previously implemented item-13 layout. A valid item-266 channel cannot enable
+channel writes, a doorbell, or rail votes.
+
+The same Linux driver accepts either a 40-byte byte-aligned channel-info pair
+or an 88-byte word-aligned pair. The 0187 power implementation deliberately
+still accepts only the 88-byte format it implements; 0188 reports an observed
+40-byte item as stage 4 rather than silently interpreting it. Linux also halves
+the FIFO item into equal TX/RX rings and uses power-of-two masking, matching the
+existing bounded FIFO check. Linux SMEM resolves nonzero `aux_base` only against
+a configured memory region; 0188 prints that raw field but does not broaden the
+physical mapping whitelist.
+
+0188 also hardens the read-only observer diagnostic. Error flags are accepted
+only with DONE, matching Linux's PMIC-arbiter ordering. Each requested byte is
+issued and read independently twice; only agreeing values are published, with
+up to three bounded pairs. `r-101` means unstable readback, not a rail state.
+A short post-command delay reduces reuse of prior DONE/data. This does not make
+raw selectors a voltage measurement.
+
+Host tests exercise the actual patched sources with GCC and Clang sanitizers.
+They verify stage 1–6 classification, both Linux allocation tables, secondary
+table diagnostic-only behavior, and zero channel/FIFO/doorbell writes in layout
+mode; selector precedence over power/identity; reset-low and released bus lines;
+agreeing reads; stale error-without-DONE timeout; completed denied reads;
+unstable read rejection; and all prior transport/RPM safety cases.
+
+**0188 CI/image/device results pending.**
+
+The Daisy vendor FT5446 driver was rechecked before publishing 0188. It still
+confirms `vdd` from L10 (DT-fixed 2.85 V), `vcc_i2c` from L6 (1.8 V), reset low
+for 20 ms then a 200 ms settle, IDs at `0xa3`/`0x9f`, and a combined register-0
+read of `3 + 10 * 6 = 63` bytes. No L5 vote or HID-before-identity behavior is
+supported by that Linux evidence.

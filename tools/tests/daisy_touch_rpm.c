@@ -1,6 +1,6 @@
 /* Deterministic RPM peer; bounds-check all MMIO and every outbound vote. */
 static uint32_t smem[DR_SIZE / 4], ipc[0x1000 / 4];
-static unsigned notifications, packets, waits, ring_writes, channel_writes;
+static unsigned notifications, packets, waits, ring_writes, channel_writes, diag_maps;
 static unsigned fail_open, fail_map, bad_ack, stale_left, error_ldo;
 static bool no_ack, full_fifo, delay_reply;
 static unsigned delayed;
@@ -9,6 +9,9 @@ static uint32_t pending_id;
 #define TABLE_OFF 0x3000u
 #define INFO_OFF 0x4000u
 #define FIFO_OFF 0x5000u
+#define ALT_TABLE_OFF 0x6000u
+#define ALT_INFO_OFF 0x7000u
+#define ALT_FIFO_OFF 0x8000u
 #define CID 7u
 #define TX(off) smem[(INFO_OFF + (off)) / 4]
 #define RX(off) smem[(INFO_OFF + DR_HALF + (off)) / 4]
@@ -28,7 +31,7 @@ fresh_rpm(void)
 {
 	memset(smem, 0, sizeof(smem));
 	memset(ipc, 0, sizeof(ipc));
-	notifications = packets = waits = ring_writes = channel_writes = 0;
+	notifications = packets = waits = ring_writes = channel_writes = diag_maps = 0;
 	fail_open = fail_map = bad_ack = stale_left = error_ldo = delayed = 0;
 	no_ack = full_fifo = delay_reply = false;
 	dr_smem = dr_ipc = dr_tx = dr_rx = dr_out = dr_in = 0;
@@ -42,6 +45,18 @@ fresh_rpm(void)
 	smem[(TABLE_OFF + 20) / 4] = CID;
 	smem[(TABLE_OFF + 24) / 4] = 0x20f;
 	smem[(TABLE_OFF + 28) / 4] = 1;
+}
+
+static void
+secondary_table(void)
+{
+	item(266, ALT_TABLE_OFF, 64 * 32);
+	item(138 + CID, ALT_INFO_OFF, 88);
+	item(202 + CID, ALT_FIFO_OFF, 1024);
+	memcpy((char *)smem + ALT_TABLE_OFF, "rpm_requests", sizeof("rpm_requests"));
+	smem[(ALT_TABLE_OFF + 20) / 4] = CID;
+	smem[(ALT_TABLE_OFF + 24) / 4] = 0x20f;
+	smem[(ALT_TABLE_OFF + 28) / 4] = 1;
 }
 
 static void
@@ -161,6 +176,8 @@ ml_io_map(vm_offset_t addr, vm_size_t n)
 	assert(!(addr & 0xfff) && n && !(n & 0xfff));
 	if (addr == (DR_IPC & ~0xfffu)) { return fail_map == 1 ? 0 : (vm_offset_t)ipc; }
 	assert(addr >= DR_SMEM && addr - DR_SMEM <= DR_SIZE - n);
+	if (addr == DR_SMEM + ALT_TABLE_OFF || addr == DR_SMEM + ALT_INFO_OFF ||
+	    addr == DR_SMEM + ALT_FIFO_OFF) { diag_maps++; }
 	if (fail_map == 2 || (fail_map == 3 && addr == DR_SMEM + FIFO_OFF)) { return 0; }
 	return (vm_offset_t)smem + addr - DR_SMEM;
 }
@@ -168,6 +185,30 @@ ml_io_map(vm_offset_t addr, vm_size_t n)
 int
 main(void)
 {
+	/* Layout-only diagnostics never write a channel, FIFO, or doorbell. */
+	fresh_rpm();
+	assert(daisy_touch_rpm_layout() == 0 && dr_layout_stage == 6);
+	assert(!notifications && !packets && !ring_writes && !channel_writes);
+	/* Linux's second allocation table is reported but never enables power. */
+	fresh_rpm(); secondary_table();
+	assert(daisy_touch_rpm_layout() == 0 && dr_layout_stage == 6 && diag_maps == 3);
+	assert(!notifications && !packets && !ring_writes && !channel_writes);
+	fresh_rpm(); secondary_table(); smem[TABLE_OFF / 4] = 0;
+	assert(daisy_touch_rpm_layout() == -1 && dr_layout_stage == 3 && diag_maps == 3);
+	assert(!notifications && !packets && !ring_writes && !channel_writes);
+	fresh_rpm(); secondary_table(); smem[TABLE_OFF / 4] = 0;
+	assert(daisy_touch_power_on() == -1 && !diag_maps);
+	assert(!notifications && !packets && !ring_writes && !channel_writes);
+	for (unsigned stage = 1; stage <= 5; stage++) {
+		fresh_rpm();
+		if (stage == 1) { fail_map = 1; }
+		if (stage == 2) { item(13, DR_SIZE - 4, 2048); }
+		if (stage == 3) { smem[TABLE_OFF / 4] = 0; }
+		if (stage == 4) { item(14 + CID, INFO_OFF, 40); }
+		if (stage == 5) { item(338 + CID, FIFO_OFF, 1000); }
+		assert(daisy_touch_rpm_layout() == -1 && dr_layout_stage == stage);
+		assert(!notifications && !packets && !ring_writes && !channel_writes);
+	}
 	fresh_rpm();
 	assert(daisy_touch_power_on() == 0 && packets == 2 && !waits);
 	assert(daisy_touch_power_on() == 0 && packets == 2); /* no duplicate votes */
@@ -242,6 +283,6 @@ main(void)
 	assert(dr_ack(ack, 32, 42) == -7);
 	ack[6] = 5;
 	assert(dr_ack(ack, 32, 42) == -6);
-	puts("PASS: RPM SMEM bounds, exclusive fields, handshake, whitelisted votes, FIFO wrap/space, ACK ID/length/errors, timeouts, no retries");
+	puts("PASS: RPM SMEM bounds/tables, read-only diagnostics, handshake, votes, FIFO/ACK safety, timeouts");
 	return 0;
 }

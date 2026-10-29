@@ -1,0 +1,264 @@
+diff --git a/bsd/dev/daisy_touch_rpm.c b/bsd/dev/daisy_touch_rpm.c
+index d156769..d4c5598 100644
+--- a/bsd/dev/daisy_touch_rpm.c
++++ b/bsd/dev/daisy_touch_rpm.c
+@@ -17,6 +17,7 @@
+ 
+ extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
+ int daisy_touch_power_on(void);
++int daisy_touch_rpm_layout(void);
+ 
+ #define DR_SMEM 0x86300000u
+ #define DR_SIZE 0x100000u
+@@ -42,6 +43,7 @@ static vm_offset_t dr_smem, dr_ipc, dr_tx, dr_rx, dr_out, dr_in;
+ static uint32_t dr_half, dr_id;
+ static int dr_wait, dr_result = -1;
+ static bool dr_attempted;
++static unsigned dr_layout_stage;
+ 
+ static uint32_t
+ dr_rd(vm_offset_t base, uint32_t off)
+@@ -80,50 +82,116 @@ dr_item(unsigned item, uint32_t *size)
+ {
+ 	if (item >= 419) { return 0; }
+ 	unsigned info = 208 + 16 * item;
+-	if (!dr_rd(dr_smem, info)) { return 0; }
++	uint32_t allocated = dr_rd(dr_smem, info);
+ 	uint32_t off = dr_rd(dr_smem, info + 4), n = dr_rd(dr_smem, info + 8);
+-	uint32_t ext = dr_rd(dr_smem, info + 12) & ~3u;
++	uint32_t raw_ext = dr_rd(dr_smem, info + 12), ext = raw_ext & ~3u;
++	printf("DAISY RPM: item%u a%u off%x size%x ext%x\n", item, allocated, off, n, raw_ext);
++	if (!allocated) { return 0; }
+ 	if ((ext && ext != DR_SMEM) || !n || n > DR_SIZE || off < 0x2000 || off > DR_SIZE - n || ((off | n) & 3u)) {
+ 		return 0;
+ 	}
+ 	vm_offset_t map = ml_io_map(DR_SMEM + (off & ~0xfffu), ((off & 0xfffu) + n + 0xfffu) & ~0xfffu);
+-	if (!map) { return 0; }
++	if (!map) {
++		printf("DAISY RPM: item%u map failed\n", item);
++		return 0;
++	}
+ 	*size = n;
+ 	return map + (off & 0xfffu);
+ }
+ 
+-static int
+-dr_open(void)
++static unsigned
++dr_scan_table(unsigned item, vm_offset_t table, uint32_t size)
+ {
+-	uint32_t size = 0, cid = 64;
+-	dr_smem = ml_io_map(DR_SMEM, 0x2000);
+-	dr_ipc = ml_io_map(DR_IPC & ~0xfffu, 0x1000);
+-	if (!dr_smem || !dr_ipc) { return -1; }
+-	vm_offset_t table = dr_item(13, &size);
+-	if (!table) { return -1; }
++	unsigned cid = 64, used = 0, candidates = 0;
+ 	for (unsigned i = 0; i < 64 && 32 * (i + 1) <= size; i++) {
+-		char name[20];
++		char name[21];
+ 		unsigned off = 32 * i;
+ 		for (unsigned j = 0; j < 20; j += 4) {
+ 			uint32_t v = dr_rd(table, off + j);
+ 			memcpy(name + j, &v, 4);
+ 		}
++		name[20] = 0;
+ 		uint32_t flags = dr_rd(table, off + 24);
++		uint32_t ref = dr_rd(table, off + 28), id = dr_rd(table, off + 20);
++		if (name[0] && ref) { used++; }
+ 		if (!memcmp(name, "rpm_requests", sizeof("rpm_requests")) && (flags & 0x3ffu) == 0x20fu &&
+-		    dr_rd(table, off + 28)) {
+-			cid = dr_rd(table, off + 20);
+-			break;
++		    ref && cid == 64) {
++			cid = id;
++		}
++		if (name[0] && ((flags & 0xffu) == 15 || !memcmp(name, "rpm", 3))) {
++			/* Untrusted shared-memory names: printable, terminated, at most eight. */
++			for (unsigned j = 0; j < 20 && name[j]; j++) {
++				if ((unsigned char)name[j] < 32 || (unsigned char)name[j] > 126) { name[j] = '.'; }
++			}
++			if (candidates++ < 8) {
++				printf("DAISY RPM: table%u ch%u %s cid%u flags%x ref%u\n",
++				    item, i, name, id, flags, ref);
++			}
+ 		}
+ 	}
++	printf("DAISY RPM: table%u used%u candidates%u selected%u\n", item, used, candidates, cid);
++	return cid;
++}
++
++static int
++dr_layout(void)
++{
++	uint32_t size = 0;
++	dr_layout_stage = 1;
++	dr_smem = ml_io_map(DR_SMEM, 0x2000);
++	dr_ipc = ml_io_map(DR_IPC & ~0xfffu, 0x1000);
++	printf("DAISY RPM: map smem%u ipc%u (layout reads only)\n", dr_smem != 0, dr_ipc != 0);
++	if (!dr_smem || !dr_ipc) { return -1; }
++	printf("DAISY RPM: heap init%u free%x avail%x ver7%x\n", dr_rd(dr_smem, 192),
++	    dr_rd(dr_smem, 196), dr_rd(dr_smem, 200), dr_rd(dr_smem, 92));
++	dr_layout_stage = 2;
++	vm_offset_t table = dr_item(13, &size);
++	if (!table) { return -1; }
++	dr_layout_stage = 3;
++	unsigned cid = dr_scan_table(13, table, size);
+ 	if (cid >= 64) { return -1; }
++	dr_layout_stage = 4;
+ 	dr_tx = dr_item(14 + cid, &size);
+ 	if (!dr_tx || size != 2 * DR_HALF) { return -1; }
+ 	dr_rx = dr_tx + DR_HALF;
++	dr_layout_stage = 5;
+ 	dr_out = dr_item(338 + cid, &size);
+ 	if (!dr_out || size < 256 || (size & (size - 1))) { return -1; }
+ 	dr_half = size / 2;
+ 	dr_in = dr_out + dr_half;
+-	printf("DAISY RPM: cid%u half%u states%u/%u ipc%x\n", cid, dr_half,
++	dr_layout_stage = 6;
++	return 0;
++}
++
++int
++daisy_touch_rpm_layout(void)
++{
++	int r = dr_layout();
++	/* Linux scans both legacy tables. Report table 266, but never power from it. */
++	if (dr_smem) {
++		uint32_t size = 0;
++		vm_offset_t table = dr_item(266, &size);
++		if (table) {
++			unsigned cid = dr_scan_table(266, table, size);
++			if (cid < 64) {
++				uint32_t info_size = 0, fifo_size = 0;
++				vm_offset_t info = dr_item(138 + cid, &info_size);
++				vm_offset_t fifo = dr_item(202 + cid, &fifo_size);
++				printf("DAISY RPM: table266 selected%u info%u/%x fifo%u/%x (diagnostic only)\n",
++				    cid, info != 0, info_size, fifo != 0, fifo_size);
++			}
++		}
++	}
++	printf("DAISY RPM: layout result %d stage%u (no writes)\n", r, dr_layout_stage);
++	return r;
++}
++
++static int
++dr_open(void)
++{
++	int r = dr_layout();
++	if (r) { return r; }
++	printf("DAISY RPM: half%u states%u/%u ipc%x\n", dr_half,
+ 	    dr_rd(dr_tx, DR_STATE), dr_rd(dr_rx, DR_STATE), DR_IPC);
+ 	/* Reset only fields owned by apps, as Linux qcom_smd_channel_reset does. */
+ 	dr_wr(dr_tx, DR_STATE, 0);
+@@ -258,6 +326,7 @@ daisy_touch_power_on(void)
+ 	if (!dr_result) { dr_result = dr_vote(10, 2850000); }
+ 	if (!dr_result) { dr_result = dr_vote(6, 1800000); }
+ 	printf("DAISY RPM: power result %d\n", dr_result);
++	if (dr_result == -1) { printf("DAISY RPM: rejected layout stage%u\n", dr_layout_stage); }
+ 	if (dr_result && dr_tx && dr_rx) {
+ 		printf("DAISY RPM: state%u/%u tx%u/%u rx%u/%u\n",
+ 		    dr_rd(dr_tx, DR_STATE), dr_rd(dr_rx, DR_STATE), dr_rd(dr_tx, DR_HEAD),
+diff --git a/bsd/dev/vince_input.c b/bsd/dev/vince_input.c
+index bc4016b..781988c 100644
+--- a/bsd/dev/vince_input.c
++++ b/bsd/dev/vince_input.c
+@@ -30,6 +30,8 @@
+  * GPIO mode leaves SDA/SCL released as inputs after its bounded probe.
+  * daisytouch_power=1 additionally requests the two touch supplies via RPM;
+  * it only takes effect with daisytouch=1 daisytouch_gpio=1, and defaults off.
++ * daisytouch_rpm_diag=1 instead inspects that layout read-only, holds reset,
++ * and supersedes power/identity probes. It needs daisytouch=1 daisytouch_gpio=1.
+  */
+ #if defined(ARM64_BOARD_CONFIG_VINCE)
+ #include <sys/param.h>
+@@ -47,6 +49,7 @@ extern void sweet_hid_touch(int finger, int down, int x, int y);
+ void vince_input_start(void);
+ extern void vince_adreno_init(void);
+ extern int daisy_touch_power_on(void);
++extern int daisy_touch_rpm_layout(void);
+ 
+ #define SPMI_CORE_PA    0x0200f000u
+ #define SPMI_CNFG_PA    0x0200a000u
+@@ -124,6 +127,7 @@ static bool input_started;
+ static int keys_chan, touch_chan;
+ static int daisy_touch, daisy_probe;
+ static int daisy_diag, daisy_gpio, daisy_power;
++static int daisy_rpm_diag;
+ static uint32_t qup_last_bus_error, qup_last_error;
+ 
+ static uint32_t
+@@ -636,16 +640,18 @@ fts_rail_init(void)
+ }
+ 
+ static int
+-fts_rail_read(vm_offset_t obs, unsigned reg, uint8_t *value)
++fts_rail_read_one(vm_offset_t obs, unsigned reg, uint8_t *value)
+ {
+-	if (!obs) {
++	if (!obs || !value || reg > 0xff) {
+ 		return -1;
+ 	}
+ 	/* Only EXT_READL commands on EE0 observer pages; no write-channel map. */
+ 	in_wr(obs, 0, (1u << 27) | (reg << 4));
++	/* Allow command/status propagation; do not reuse a previous DONE/data. */
++	delay(5);
+ 	for (unsigned i = 0; i < 2000; i++) {
+ 		uint32_t status = in_rd(obs, 8);
+-		if (status & 0xeu) {
++		if ((status & 1u) && (status & 0xeu)) {
+ 			return -(int)status;
+ 		}
+ 		if (status & 1u) {
+@@ -657,6 +663,24 @@ fts_rail_read(vm_offset_t obs, unsigned reg, uint8_t *value)
+ 	return -100;
+ }
+ 
++static int
++fts_rail_read(vm_offset_t obs, unsigned reg, uint8_t *value)
++{
++	/* Only publish agreeing independent reads; subtype changes are not valid. */
++	if (!value) { return -1; }
++	for (unsigned attempt = 0; attempt < 3; attempt++) {
++		uint8_t a = 0, b = 0;
++		int r = fts_rail_read_one(obs, reg, &a);
++		if (!r) { r = fts_rail_read_one(obs, reg, &b); }
++		if (r) { return r; }
++		if (a == b) {
++			*value = b;
++			return 0;
++		}
++	}
++	return -101; /* unstable readback, not a disabled or ready rail */
++}
++
+ static void
+ fts_rail_summary(void)
+ {
+@@ -864,6 +888,18 @@ fts_gpio_probe(void)
+ 	fts_gpio_line(GPIO_SCL, true);
+ 	tlmm_cfg(GPIO_ATTN, 0, 3, 0, false, false);
+ 	tlmm_cfg(GPIO_RST, 0, 0, 3, true, false);
++	if (daisy_rpm_diag) {
++		/* No layout relaxation, RPM doorbells/channel writes, or controller I2C. */
++		for (unsigned i = 0; i < (daisy_probe ? 3u : 1u); i++) {
++			if (i) { in_sleep(&touch_chan, 30000); }
++			(void)daisy_touch_rpm_layout();
++			fts_rail_summary();
++			printf("DAISY TOUCH: layout-only reset%u SDA%u SCL%u irq%u\n",
++			    fts_gpio_level(GPIO_RST), fts_gpio_level(GPIO_SDA),
++			    fts_gpio_level(GPIO_SCL), fts_gpio_level(GPIO_ATTN));
++		}
++		return;
++	}
+ 	if (daisy_power) {
+ 		int r = 0;
+ 		for (unsigned rail = 0; rail < 2; rail++) {
+@@ -1047,6 +1083,7 @@ vince_input_start(void)
+ 	(void)PE_parse_boot_argn("daisytouch_diag", &daisy_diag, sizeof(daisy_diag));
+ 	(void)PE_parse_boot_argn("daisytouch_gpio", &daisy_gpio, sizeof(daisy_gpio));
+ 	(void)PE_parse_boot_argn("daisytouch_power", &daisy_power, sizeof(daisy_power));
++	(void)PE_parse_boot_argn("daisytouch_rpm_diag", &daisy_rpm_diag, sizeof(daisy_rpm_diag));
+ 	tlmm = ml_io_map(TLMM_PA, TLMM_SIZE);
+ 	if (!tlmm) {
+ 		printf("VINCE INPUT: TLMM mapping failed\n");

@@ -3,12 +3,12 @@ static uint32_t regs[0x500 / 4], gpio[TLMM_SIZE / 4], tags[2];
 static unsigned tag_count, resets, delivered, released, limit, svc_acks;
 static unsigned sleeps[16], nsleeps, starts, qup_accesses, qup_maps;
 static bool running, nack, late_nack, stuck_bus, missing_done, bad_state;
-static int boot_vince, boot_daisy, boot_probe, boot_gpio, boot_power;
+static int boot_vince, boot_daisy, boot_probe, boot_gpio, boot_power, boot_rpm_diag;
 static uint32_t arb_version, observer_status, observer_reg;
-static unsigned observer_reads;
-static bool observer_missing, observer_map_fail, arb_map_fail;
+static unsigned observer_reads, observer_data_reads;
+static bool observer_missing, observer_map_fail, arb_map_fail, observer_unstable;
 static bool power_ready, power_bad_type;
-static unsigned power_calls;
+static unsigned power_calls, layout_calls;
 static int power_result;
 static void (*started_fn)(void *, wait_result_t);
 
@@ -18,21 +18,21 @@ fresh(void)
 	memset(regs, 0, sizeof(regs));
 	memset(gpio, 0, sizeof(gpio));
 	tag_count = resets = delivered = released = svc_acks = nsleeps = starts = 0;
-	qup_accesses = qup_maps = observer_reads = 0;
+	qup_accesses = qup_maps = observer_reads = observer_data_reads = 0;
 	arb_version = 0x20010000;
 	observer_status = 1;
-	observer_missing = observer_map_fail = arb_map_fail = false;
+	observer_missing = observer_map_fail = arb_map_fail = observer_unstable = false;
 	memset(fts_rail_obs, 0, sizeof(fts_rail_obs));
 	memset(&wire, 0, sizeof(wire));
 	limit = 255;
 	running = nack = late_nack = stuck_bus = missing_done = bad_state = false;
-	boot_vince = boot_daisy = boot_probe = boot_gpio = boot_power = 0;
+	boot_vince = boot_daisy = boot_probe = boot_gpio = boot_power = boot_rpm_diag = 0;
 	power_ready = power_bad_type = false;
-	power_calls = 0;
+	power_calls = layout_calls = 0;
 	power_result = 0;
 	started_fn = NULL;
 	input_started = false;
-	daisy_touch = daisy_probe = daisy_diag = daisy_gpio = daisy_power = 0;
+	daisy_touch = daisy_probe = daisy_diag = daisy_gpio = daisy_power = daisy_rpm_diag = 0;
 	qup_last_bus_error = qup_last_error = 0;
 	qup = 1;
 	tlmm = 2;
@@ -66,6 +66,7 @@ mock_rd(vm_offset_t base, uint32_t off)
 	if (base == 5 || base == 6) {
 		if (off == 8) { return observer_status; }
 		assert(off == 0x18);
+		if (observer_unstable) { return observer_data_reads++ & 1u; }
 		if (daisy_power) {
 			if (observer_reg == 4) { return power_bad_type ? 0 : 0x21; }
 			if (observer_reg == 8 || observer_reg == 0x46) { return power_ready ? 0x80 : 0; }
@@ -207,6 +208,12 @@ int daisy_touch_power_on(void)
 	power_calls++;
 	return power_result;
 }
+int daisy_touch_rpm_layout(void)
+{
+	assert(!(gpio[GPIO_IO(GPIO_RST) / 4] & 2));
+	layout_calls++;
+	return -1;
+}
 static bool PE_parse_boot_argn(const char *key, void *p, int size)
 {
 	assert(size == sizeof(int));
@@ -217,6 +224,7 @@ static bool PE_parse_boot_argn(const char *key, void *p, int size)
 	else if (!strcmp(key, "daisytouch_probe")) { *out = boot_probe; }
 	else if (!strcmp(key, "daisytouch_gpio")) { *out = boot_gpio; }
 	else if (!strcmp(key, "daisytouch_power")) { *out = boot_power; }
+	else if (!strcmp(key, "daisytouch_rpm_diag")) { *out = boot_rpm_diag; }
 	else { return false; }
 	return true;
 }
@@ -290,11 +298,11 @@ int main(void)
 	fts_vince_crosscheck();
 	assert(qup_clk_ctl == CLK_CTL_100K && !running);
 	fresh();
-	boot_power = boot_gpio = boot_probe = 1; /* hints alone never turn touch on */
+	boot_power = boot_rpm_diag = boot_gpio = boot_probe = 1; /* hints alone never turn touch on */
 	vince_input_start();
 	assert(starts == 0 && !power_calls);
 	fresh();
-	boot_vince = boot_gpio = boot_power = 1; /* hints do not change the Vince selection */
+	boot_vince = boot_gpio = boot_power = boot_rpm_diag = 1; /* hints do not change Vince selection */
 	vince_input_start();
 	assert(starts == 1 && started_fn == touch_thread);
 	fresh();
@@ -352,12 +360,18 @@ int main(void)
 	fts_rail_init();
 	assert(fts_rail_obs[0] == 5 && fts_rail_obs[1] == 6);
 	fts_rail_summary();
-	assert(observer_reads == 12 && !qup_accesses);
+	assert(observer_reads == 24 && !qup_accesses);
 	value = 0xee;
 	observer_status = 5; /* DENIED takes precedence over DONE */
 	assert(fts_rail_read(5, 8, &value) == -5 && value == 0xee);
 	observer_status = 0;
 	assert(fts_rail_read(5, 8, &value) == -100 && value == 0xee);
+	observer_status = 4; /* stale DENIED without DONE is not a completed error */
+	assert(fts_rail_read(5, 8, &value) == -100 && value == 0xee);
+	observer_status = 1;
+	observer_unstable = true;
+	assert(fts_rail_read(5, 8, &value) == -101 && value == 0xee);
+	observer_unstable = false;
 	assert(fts_rail_read(0, 8, &value) == -1);
 	for (unsigned fault = 0; fault < 4; fault++) {
 		fresh();
@@ -376,13 +390,13 @@ int main(void)
 	assert(starts == 1 && started_fn == fts_probe_thread && !qup_maps);
 	started_fn(NULL, 0);
 	assert(!qup_accesses && nsleeps == 4 && sleeps[0] == 20 && sleeps[1] == 200);
-	assert(sleeps[2] == 30000 && sleeps[3] == 30000 && observer_reads == 36);
+	assert(sleeps[2] == 30000 && sleeps[3] == 30000 && observer_reads == 72);
 	assert(wire.nbytes == 36 && wire.sda && wire.scl);
 	fresh(); wire_init(); wire.absent = true;
 	daisy_gpio = daisy_probe = 1;
 	fts_probe_thread(NULL, 0);
 	assert(!qup_accesses && wire.nbytes == 9 && nsleeps == 10);
-	assert(wire.sda && wire.scl && observer_reads == 36);
+	assert(wire.sda && wire.scl && observer_reads == 72);
 	/* The power option only runs in GPIO mode. Reset cannot release on errors. */
 	for (unsigned fault = 0; fault < 5; fault++) {
 		fresh(); wire_init();
@@ -404,6 +418,15 @@ int main(void)
 			assert(!(gpio[GPIO_IO(GPIO_RST) / 4] & 2));
 		}
 	}
-	puts("PASS: QUP/STOP transport, GPIO wire framing/timeouts/NACKs, read-only rails, exclusive selection, reset");
+	/* Layout diagnostics supersede power and identity and remain read-only. */
+	fresh(); wire_init();
+	boot_daisy = boot_gpio = boot_power = boot_rpm_diag = boot_probe = 1;
+	vince_input_start();
+	started_fn(NULL, 0);
+	assert(layout_calls == 3 && !power_calls && !wire.nbytes);
+	assert(!qup_maps && !qup_accesses && wire.sda && wire.scl);
+	assert(!(gpio[GPIO_IO(GPIO_RST) / 4] & 2));
+	assert(nsleeps == 2 && sleeps[0] == 30000 && sleeps[1] == 30000);
+	puts("PASS: QUP/GPIO transport, stable read-only rails, RPM layout-only selection, reset safety");
 	return 0;
 }
