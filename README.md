@@ -15,9 +15,10 @@ known-working image and build command.
 **Touch identification:** TWRP confirmed **FocalTech FT5446** (`0x5422`),
 Ofilm touch panel + CSOT LCD, firmware `0x0c` on this handset. XNU's opt-in
 0190 test now confirms RPM L10/L6 ACKs, ready rails, and three successful GPIO
-identity reads. The 0192 trace contains live motion and 125 structurally valid
-two-contact samples, but reserved-event/count inconsistencies still block
-report validation and touch HID delivery. See the
+identity reads. The opt-in 0193 counter delay cuts median report reads from
+31.3 to 8.8 ms and captures 182 structurally valid two-contact samples, but
+three reserved-event/count inconsistencies still block report validation and
+touch HID delivery. See the
 [touchscreen bring-up plan](docs/TOUCHSCREEN-PLAN.md).
 
 ## Target Hardware

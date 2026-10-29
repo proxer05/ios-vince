@@ -3,10 +3,12 @@
 **Current milestone (0190):** RPM L10/L6 votes and matching ACKs, enabled/ready
 rail readback, and FT5446 GPIO identity (`0x5422`, firmware `0x0c`, vendor `0x51`)
 are validated on this handset, including the 30/60-second identity repeats.
-The power evidence is in `artifacts/console-power-0190.log`. The 0192 contact
-trace contains live motion, two-contact and release samples, but one reserved
-event and two count inconsistencies prevent a clean coherence result. A local
-GPIO delay comparison is next; touch HID remains disabled.
+The power evidence is in `artifacts/console-power-0190.log`. The 0193 local
+GPIO counter delay is hardware-validated: requested 5 us waits measure 5 us,
+and median report reads fall from 31.3 to 8.8 ms. Its contact trace contains
+227 structurally valid frames, including 182 two-contact samples, but two
+reserved events and one count inconsistency still block report coherence.
+Touch HID remains disabled; see the [0193 result](#0193-hardware-result-faster-reads-coherence-still-blocked).
 
 ## Hardware identified in TWRP — 2026-10-29
 
@@ -1401,3 +1403,84 @@ full releases during the first five minutes. Save the next extraction as
 `artifacts/console-busywait-0193.log`. Compare `delay5 legacy` / `delay5 busy`
 measurements, complete-transfer and byte-gap timings, IRQ samples and contact
 validity against the 0192 touch trace. The test emits no touch HID events.
+
+### 0193 hardware result: faster reads, coherence still blocked
+
+After the user finished the test and returned to fastboot, temporarily booted
+TWRP (success in **1.776 s**) and extracted
+`artifacts/console-busywait-0193.log`: **98,461 bytes**, 898 lines, SHA-256
+`812fd5dc7ed4dcbeef93e493f2af4a948dcf9fbb3354417041434b9da17186d0`.
+The saved trace ends at seq1179, **39,105 ms**, on a valid full-release frame.
+There is no completion summary, so this does not establish a completed
+five-minute capture. No I²C-error, logger-loss/stop or panic markers appear.
+Initial and 30-second identity/firmware/vendor and ready-rail checks succeed;
+the last progress record establishes **901 successful reads, zero errors** at
+30,074 ms. Later saved samples extend through seq1179 without a final counter
+summary.
+
+The reset-held delay comparison confirms substantial generic-delay rounding:
+
+```text
+DAISY TOUCH: delay5 legacy us22/23/37 samples32
+DAISY TOUCH: delay5 busy us5/5/5 samples32
+DAISY REPORT: progress ms30074 reads901 ok901 errors0 raw64 us8767/8799/9093 gap452
+```
+
+Delay values are min/mean/max; transfer comparisons below are for **logged
+structurally valid samples**, with min/median/max in milliseconds:
+
+| Measurement | 0192 contact trace | 0193 counter delay |
+| --- | --- | --- |
+| Complete transfer | 28.565 / 31.310 / 56.598 | 8.768 / 8.799 / 9.085 |
+| Largest byte gap, median | 478 us | 157 us |
+| Largest byte gap, maximum | 18,961 us | 402 us |
+| Frames with sampled IRQ-level changes | 251 / 266 | 208 / 227 |
+| Changes within second-record interval | 139 / 266 | 31 / 227 |
+
+Median transfers are **3.56 times faster**. Across all attempts through the
+last progress record, transfer min/mean/max is 8.767/8.799/9.093 ms, and the
+largest byte gap is 452 us. These timings include instrumentation; IRQ masks
+remain sampled levels rather than interrupt counts.
+
+Of **252 raw frames**, **227 pass structural checks**: 224 active, three
+zero-active, 182 two-contact, 166 motion transitions, two full releases and
+12 slot releases. Slots 0/1 cover X 276–1079 and Y 1271–1409. First valid
+contact is seq663 at 22,082 ms. The 25 rejected frames comprise 22 startup
+`00` + 62 `ff` sentinels and these three contact anomalies:
+
+| Sequence / ms | Rejected content | Transfer / largest byte gap |
+| --- | --- | --- |
+| 819 / 27364 | Header 2; slot0 CONTACT (330,1335), slot1 event 3 (1079,1326), second record `c437152e5330` | 8.851 ms / 210 us |
+| 822 / 27471 | Header 2; slot0 CONTACT (330,1335), slot1 event 3 (1079,1324), second record `c437152c4930` | 8.770 ms / 130 us |
+| 952 / 31735 | Header 2; slot1 CONTACT (741,1279), slot0 UP (297,1402): only one active contact | 8.796 ms / 155 us |
+
+Seq820 contains only slot0; seq823 contains slot0 CONTACT and an explicit
+slot1 UP at (1079,1324). Seq953 contains only slot1 CONTACT at (741,1279),
+with the header corrected to 1. Thus the count anomaly now occurs during a
+release, complementing 0192's two appearance/count anomalies. Record order
+changes at seq952; record position must not be confused with slot ID.
+
+The anomalous IRQ masks are respectively `ffffffffe0000001`,
+`fc00000003ffffff` and `00000001fffffffc`. None has an observed IRQ-level
+change within the second-record interval. Together with the short byte gaps,
+this shows that long scheduling stalls and a sampled second-record IRQ
+transition are not necessary for these faults. It does not establish whether
+the controller supplies transient records or whether reads cross a report
+update. Faster GPIO delays alone have **not resolved coherence**; comparing
+fault rates across different gestures/short captures is not conclusive.
+
+The existing analyzer rejects all three contact anomalies and the startup
+sentinels (exit 1), and also reports the absent completion summary. No report
+validation rule or HID gate was relaxed.
+
+**Next discriminating experiment:** capture raw 63-byte reports from the
+native Linux IRQ-driven hardware-I²C path for the same contact transitions.
+Recovery currently has `fts_ts` bound at `3-0038` (device name `5446`), so a
+control must observe that driver's reads or arrange exclusive ownership;
+concurrent `/dev/i2c-3` polling would introduce another report consumer.
+The pinned vendor reference requests falling-edge, one-shot threaded IRQs
+and reads all 63 bytes in one combined transaction. Its parser does not
+require exact header/active-record equality, and its event reporting treats
+non-DOWN/non-CONTACT flags as releases; Linux input events alone therefore
+cannot establish raw-report coherence. Native raw capture is still pending.
+The phone remains in temporary TWRP after collection.

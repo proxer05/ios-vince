@@ -391,3 +391,18 @@ boot succeeded on `6790a29e0305` in 0.541 s. See
 [the 0193 test](TOUCHSCREEN-PLAN.md#0193-counter-delay-image-built-and-temporarily-booted)
 for the command and expected evidence. Next recovery output:
 `artifacts/console-busywait-0193.log`.
+
+### 0193 counter-delay hardware result saved
+
+Temporarily booted TWRP in 1.776 s and extracted
+`artifacts/console-busywait-0193.log` (98,461 bytes, 898 lines; SHA-256
+`812fd5dc7ed4dcbeef93e493f2af4a948dcf9fbb3354417041434b9da17186d0`).
+Requested 5 us delays measure 22/23/37 us min/mean/max using the generic path
+and 5/5/5 us with local spinning. Median valid-sample transfers fall from
+31.310 to 8.799 ms. The capture contains 227 structurally valid frames,
+including 182 two-contact samples, but two reserved-event records and one
+header/active-count mismatch remain. Power/identity checks pass; the last
+progress record has 901 successful reads and zero errors. The saved trace
+ends at 39.105 seconds without a completion summary. See
+[the detailed comparison](TOUCHSCREEN-PLAN.md#0193-hardware-result-faster-reads-coherence-still-blocked).
+Touch HID remains disabled; the phone is in temporary TWRP.
