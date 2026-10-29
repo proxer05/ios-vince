@@ -193,14 +193,19 @@ def build_vince_adt(seed=None):
         ('ranges', u64(0, SOC_BASE, 0x100000000 - SOC_BASE)),
     ], [gic, gic_alias, wdt, disp0, sdhci_node, touch_node, wlan, bluetooth])
 
-    # Vince Framebuffer console node for early kprintf
-    fbcon = node('vince-fbcon', [
-        ph(),
-        ('reg', u64(FB, FB_SIZE)),
-        ('width', u32(FB_W)),
-        ('height', u32(FB_H)),
-        ('stride', u32(FB_STRIDE)),
-    ])
+    # Vince Framebuffer console node for early kprintf.  The kernel console
+    # paints over the same framebuffer SpringBoard renders into, so it can be
+    # dropped with VINCE_NO_FBCON=1 to see what the UI is actually doing.
+    if os.environ.get('VINCE_NO_FBCON') == '1':
+        fbcon = []
+    else:
+        fbcon = [node('vince-fbcon', [
+            ph(),
+            ('reg', u64(FB, FB_SIZE)),
+            ('width', u32(FB_W)),
+            ('height', u32(FB_H)),
+            ('stride', u32(FB_STRIDE)),
+        ])]
 
     # System defaults
     defaults = node('defaults', [
@@ -245,16 +250,33 @@ def build_vince_adt(seed=None):
 
     # Product identity: iPhone X (iPhone10,3 / D22AP)
     product_props = d22ap_product()
-    if product_props:
-        product = [node('product', [ph()] + product_props)]
-    else:
-        product = [node('product', [
-            ph(),
+    if not product_props:
+        product_props = [
             ('product-id', u32(0x1003)),
             ('product-name', cstr('iPhone X')),
             ('model-number', cstr('D22AP')),
             ('device-class', cstr('iPhone')),
-        ])]
+        ]
+
+    # CoreUI/MobileGestalt artwork traits. Without these MGCopyAnswer only yields
+    # ArtworkDeviceScaleFactor, so CUICatalog cannot resolve any rendition key and
+    # -[_UIScreenComplexBoundingPathUtilities _loadBitmapForScreen:type:] aborts.
+    # Values are the real D22AP (iPhone X) /product properties.
+    have = {k for k, v in product_props}
+    for k, v in (
+        ('artwork-device-idiom', cstr('phone')),
+        ('artwork-device-subtype', u32(0x984)),   # 2436, iPhone X logical display profile
+        ('artwork-display-gamut', cstr('P3')),
+        ('artwork-scale-factor', u32(3)),
+        ('artwork-dynamic-displaymode', cstr('0')),
+        ('graphics-featureset-class', cstr('APPLE4')),
+        ('graphics-featureset-fallbacks', cstr('APPLE3:APPLE3v1:APPLE2:APPLE1:GLES2,0')),
+        ('device-perf-memory-class', u32(4)),
+    ):
+        if k not in have:
+            product_props.append((k, v))
+
+    product = [node('product', [ph()] + product_props)]
 
     # Panic log region: /pram reg = <panic_base, PANIC_LOG_SIZE>
     pram = node('pram', [ph(), ('reg', u64(panic_base, PANIC_LOG_SIZE))])
@@ -270,7 +292,7 @@ def build_vince_adt(seed=None):
         ('timebase-frequency', u32(TIMEBASE)),
         ('#address-cells', u32(2)),
         ('#size-cells', u32(2)),
-    ], [chosen, defaults, cpus, arm_io, fbcon, buttons, pram] + product)
+    ], [chosen, defaults, cpus, arm_io, buttons, pram] + fbcon + product)
 
     return root
 

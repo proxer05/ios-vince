@@ -1,6 +1,89 @@
-# Daisy boot diagnostics — 2026-10-28
+# Daisy boot diagnostics
 
-## Recovery log collection
+## Homescreen confirmed — 2026-10-29
+
+The user confirmed the iOS homescreen on the Mi A2 Lite (3 GB / 64 GB)
+after temporarily booting `artifacts/daisy-artwork-home-test/daisy-boot.img`.
+This completes the first milestone: reach the homescreen without touch.
+Touch remains intentionally disabled (`vincetouch=0`).
+
+The preceding `artifacts/daisy-artwork-nofbcon/daisy-boot.img` boot reached
+the visible lockscreen. Its SHA-256 was
+`8443e2625ecad4d09fa1aa2e549243328c7a4134f92d2d8422d8bdbf78947ad0`.
+The homescreen image adds `sweethidtest=30` to send simulated Home presses.
+
+Working configuration:
+
+- XNU: `artifacts/kernel-0183/kernel.development.vince`, CI run `40754164405`.
+- Root: iPhone X iOS 16.7.16 (20H392), HFSX on GPT `userdata`, `rd=mmcroot0`.
+- ADT: real iPhone X artwork/graphics traits under `/product`.
+- `VINCE_NO_FBCON=1` omits the framebuffer serial console node so kernel
+  messages do not overwrite the UI framebuffer.
+- MobileGestalt's stale cache was invalidated before this boot.
+- `sweethidtest=30` sends Home press/release events every 30 seconds, up to
+  30 presses; this got past the lockscreen on the confirmed boot.
+- Boot image SHA-256:
+  `fc4f4603d2d8fe87207ec06cc0eb807ba396308804e7a45de5906fd96f2e1352`.
+
+Reproduce the image assembly from the repository root:
+
+```sh
+VINCE_NO_FBCON=1 \
+DTB="$PWD/artifacts/daisy-dtb.bin" \
+PAYLOAD_CMDLINE='debug=0xc serial=3 cpus=1 keepsyms=1 io=0x3f -noprogress wdt=-1 wdt_test=no_user_checkin rd=mmcroot0 mmcrw=1 rootrw=1 unentitled_ios_sim_launch=1 launchd_unsecure_cache=1 ignition_level=1 vincefix=bluetool vincetouch=0 vincekeys=1 sweethidtest=30' \
+tools/build_daisy.sh artifacts/kernel-0183/kernel.development.vince artifacts/daisy-artwork-home-test
+fastboot -s 6790a29e0305 boot artifacts/daisy-artwork-home-test/daisy-boot.img
+```
+
+The generator uses a fresh random seed, so rebuilt image hashes differ.
+The Android DTB is appended to the shim kernel; the boot image's `second`
+field is empty.
+
+### Bounding-path failure and the stale MobileGestalt cache
+
+CoreUI reported that `MGCopyAnswer` returned only
+`{ ArtworkDeviceScaleFactor = 3; }`, missing the idiom, gamut and graphics
+feature class needed to select the bounding-path asset. The generator's
+optional `research/ipsw-x/d22ap.adt` was absent, so its fallback `/product`
+node lacked those traits. The ADT generator now supplies them explicitly.
+
+Adding the properties alone did not resolve the existing root's failure.
+The cache at
+`/private/var/containers/Shared/SystemGroup/systemgroup.com.apple.mobilegestaltcache/Library/Caches/com.apple.MobileGestalt.plist`
+still held the incomplete artwork dictionary. Its **source filesystem**
+mtime was `2026-10-28 10:33:39 UTC`, preceding the artwork change. The later
+timestamp initially cited during diagnosis belonged to the extracted copy,
+not the source. Early-boot IOKit traces show the missing artwork lookups;
+later boots use the cached answers without repeating those lookups.
+
+For this particular snapshot, the 6927-byte plist occupied two 4096-byte
+allocation blocks. Their contents were matched byte-for-byte to the extracted
+plist before the corresponding 8192 bytes were zeroed in recovery. Readback
+confirmed the invalidation. These extents are snapshot-specific, not reusable
+offsets. The next artwork/no-fbcon boot reached the visible lockscreen; the
+regenerated cache contents have not yet been collected.
+
+### Log interpretation
+
+The parser requires a flat logarchive layout: `Persist/`, `Special/`,
+`Signpost/`, `HighVolume/`, `timesync/`, `dsc/`, and UUID prefix directories
+at the archive root. Copying the on-device `private/var/db` hierarchy directly
+produces unresolved shared strings.
+
+Parsed timestamps overlap across boots and disagree with chunk mtimes. The
+latest collected Persist chunks `22`–`25` belong to boot `D427D721...`, which
+still had the pre-invalidation crash loop. Boot `424501B3...` is an older,
+shorter record, not proof that the artwork fix had already succeeded.
+
+### No-touch Home input
+
+The current physical key mapping has no Home key or swipe gesture. The
+existing HID service supports `sweethidtest=N`, sending a Home press/release
+every N seconds for up to 30 presses. The confirmed homescreen image uses
+`sweethidtest=30`. Local checks verified that this option and a fresh ADT random
+seed were the only changes from the working lockscreen payload.
+
+## Recovery log collection — 2026-10-28
 
 Temporary recovery boot succeeded with:
 
@@ -51,9 +134,9 @@ on an inaccurate console transcription.
 `/System/Library/PrivateFrameworks/UIKitCore.framework/BoundingPathData.bundle/Assets.car`
 exists on the phone (101,768 bytes) and matches the original root image:
 SHA-256 `0a53453f1e096f70ccb38618b0b8c32fa950f71dc3b559c4ce556825517aa04d`.
-The requested logical asset name occurs in this catalog. Why the runtime
-lookup returns no data remains to be diagnosed; changing the physical
-1080x2280 panel dimensions is not yet justified.
+The requested logical asset name occurs in this catalog. The artwork traits
+and stale-cache diagnosis above resolved this failure in the later boot;
+the physical panel remains 1080x2280.
 
 ## Why the first 0183 image still ran bluetoothd
 

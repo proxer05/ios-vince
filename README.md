@@ -5,6 +5,13 @@ bring-up. This is currently the **no-touch first-boot branch**: the vince kernel
 root filesystem and iPhone X ADT are reused, with the daisy panel geometry substituted.
 Touch is deliberately disabled.
 
+**Status (2026-10-29):** iOS 16.7.16 **homescreen confirmed** on the 3 GB / 64 GB
+daisy with the artwork ADT fixes, stale MobileGestalt cache invalidated, and
+`VINCE_NO_FBCON=1`. The `sweethidtest=30` boot option supplies simulated Home
+presses to get past the lockscreen with touch disabled. The no-touch homescreen
+milestone is complete. See [boot diagnostics](docs/BOOT-DEBUG.md) for the
+known-working image and build command.
+
 ## Target Hardware
 - **SoC:** Qualcomm Snapdragon 625 (MSM8953), 8x ARM Cortex-A53 @ 2.0 GHz
 - **Display:** HX8399C FHD+ video-mode DSI panel, 1080x2280, 24-bit RGB888, stride 3240 bytes, continuous-splash at `0x90001000`
@@ -13,7 +20,8 @@ Touch is deliberately disabled.
 - **Storage:** Qualcomm SDHCI eMMC 5.1 (`0x07824900`), GPT partition named `userdata`
 - **Touch (not enabled yet):** two daisy variants: Goodix GT9xx on I2C-3 at `0x5d`, or
   FocalTech FT5446/FT5435 on I2C-3 at `0x38`; both use reset GPIO 64 and IRQ GPIO 65
-- **RAM:** 4 GB variant; the shim uses the 1.5 GB upper DRAM bank at `0xa0000000`
+- **RAM:** tested 3 GB variant; XNU uses the upper-memory subset starting at
+  `0xa0000000`, size `0x57f00000` (with a separate 1 MiB panic-log reservation)
 
 ## What Changed From Vince
 - Framebuffer height 2160 -> 2280 in the shim console, ADT and early debug console.
