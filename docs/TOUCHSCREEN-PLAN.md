@@ -295,3 +295,41 @@ Host tests also check that Vince retains its `0x20` address when Daisy is
 not selected, that the diagnostic STOP framing changes only the slave
 address, that error snapshots survive cleanup, and that the original speed
 is restored. **0185 device results are pending.**
+
+## Vince-style comparison image — 2026-10-29
+
+CI run [40906994679](https://github.com/proxer05/ios-vince/actions/runs/40906994679)
+passed for commit `a7e07c0fe2a5ac5d32d1439f147138109f6dfb61` with
+`MACHINE_CONFIG=VINCE`. The log confirms 0183, 0184 and 0185 were applied;
+the linked Bluetooth, FT5446 and STOP/RESTART diagnostic checks passed.
+The downloaded kernel's `SHA256SUMS` was verified.
+
+- Kernel: `artifacts/kernel-0185/kernel.development.vince`.
+- Kernel SHA-256: `d53770cf8093910feadd61f5a1d4fdf9a33319215dab432068f5a326f03a2518`.
+- Image: `artifacts/daisy-touch-crosscheck-0185/daisy-boot.img`.
+- Image SHA-256: `7d9dd163c264b8634290e4b6efc257a8f418e4ff7e8333f416cda7e7e4bc5d8e`.
+- CI log: `artifacts/daisy-touch-dev/ci-build-0185.log`.
+
+```sh
+VINCE_NO_FBCON=0 \
+DTB="$PWD/artifacts/daisy-dtb.bin" \
+PAYLOAD_CMDLINE='debug=0xc serial=3 cpus=1 keepsyms=1 io=0x3f -noprogress wdt=-1 wdt_test=no_user_checkin rd=mmcroot0 mmcrw=1 rootrw=1 unentitled_ios_sim_launch=1 launchd_unsecure_cache=1 ignition_level=1 vincefix=bluetool vincetouch=0 vincekeys=1 daisytouch=1 daisytouch_probe=1 daisytouch_diag=1 startup_debug=0 -disable_kprintf' \
+tools/build_daisy.sh artifacts/kernel-0185/kernel.development.vince artifacts/daisy-touch-crosscheck-0185
+fastboot -s 6790a29e0305 boot artifacts/daisy-touch-crosscheck-0185/daisy-boot.img
+```
+
+Verified the boot header, appended Android DTBs, empty `second` field,
+embedded ADT, physical RAM base/size, 1080×2280 framebuffer console,
+1125×2436 logical canvas, exact cmdline, and linked diagnostic markers.
+The `/product` properties match the confirmed homescreen baseline (excluding
+phandle numbering); the complete ADT matches 0184 except for its fresh random
+seed. Host tests pass. No automatic Home presses, HID touch delivery, PMIC
+writes, or controller firmware/configuration writes are enabled.
+
+Fastboot reported successful transfer and temporary boot. **On-screen results
+are awaiting user observation.** Photograph the `DAISY TOUCH:` pin/clock,
+`STOP`, `RESTART`, `bus` and `qup` lines after 30–60 seconds. The comparison
+repeats with the probe summaries; it is bounded to those summaries rather than
+continuous logging. Identical NACKs on both methods would show the failure is
+not specific to repeated START, but would not by themselves prove a missing
+rail. Explicit rail enablement remains deferred pending this evidence.
