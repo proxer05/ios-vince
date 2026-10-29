@@ -6,12 +6,11 @@ with the daisy panel geometry substituted. FT5446 touch is experimental and
 disabled by default; `daisytouch_hid=1` enables the filtered GPIO HID path with
 the prerequisites in the [touchscreen plan](docs/TOUCHSCREEN-PLAN.md#0194-opt-in-filtered-hid-for-springboard).
 
-**Status (2026-10-29):** iOS 16.7.16 **homescreen confirmed** on the 3 GB / 64 GB
-daisy with the artwork ADT fixes, stale MobileGestalt cache invalidated, and
-`VINCE_NO_FBCON=1`. The `sweethidtest=30` boot option supplies simulated Home
-presses to get past the lockscreen with touch disabled. The no-touch homescreen
-milestone is complete. See [boot diagnostics](docs/BOOT-DEBUG.md) for the
-known-working image and build command.
+**Status (2026-10-29):** iOS 16.7.16 **homescreen and basic touch navigation
+confirmed** on the 3 GB / 64 GB daisy. The user can navigate SpringBoard with
+the 0194 filtered-HID image configured for eight CPUs and no persistent logger.
+Responsiveness remains inconsistent and GPU acceleration is not enabled.
+See [boot diagnostics](docs/BOOT-DEBUG.md) for image provenance and commands.
 
 **Touch identification:** TWRP confirmed **FocalTech FT5446** (`0x5422`),
 Ofilm touch panel + CSOT LCD, firmware `0x0c` on this handset. XNU's opt-in
@@ -21,8 +20,8 @@ identity reads. The opt-in 0193 counter delay cuts median report reads from
 three reserved-event/count inconsistencies remain. At the user's request,
 0194 adds experimental HID delivery for valid frames, dropping malformed frames
 and releasing stale contacts. The first hardware log confirms 60 down/up pairs
-reaching SweetHID; SpringBoard usability is still being tested. A new test image
-exposes all eight CPU cores with persistent logging off to investigate UI lag. See the
+reaching SweetHID; the subsequent SMP-image test confirms basic SpringBoard
+navigation. Touch consistency and alignment still need refinement. See the
 [touchscreen bring-up plan](docs/TOUCHSCREEN-PLAN.md).
 
 ## Target Hardware
@@ -73,7 +72,7 @@ The iOS root is installed into the `userdata` GPT partition, so this erases Andr
 data. Keep a backup.
 
 ## Not Yet Done
-- daisy FT5446 touch driver: see the [staged plan](docs/TOUCHSCREEN-PLAN.md)
+- daisy FT5446 touch consistency, alignment and report-coherence refinement: see the [staged plan](docs/TOUCHSCREEN-PLAN.md)
 - daisy-specific GPU zap/secure-memory address verification (same Adreno 506; CPU
   rendering is enough for first boot)
 - daisy WLAN/BT calibration and MAC handling

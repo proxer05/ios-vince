@@ -1,6 +1,9 @@
 # Daisy FT5446 touchscreen bring-up
 
-**Current milestone (0190):** RPM L10/L6 votes and matching ACKs, enabled/ready
+**Current milestone (0194): basic SpringBoard touch navigation confirmed.**
+Responsiveness remains inconsistent; the current image uses software rendering.
+
+RPM L10/L6 votes and matching ACKs, enabled/ready
 rail readback, and FT5446 GPIO identity (`0x5422`, firmware `0x0c`, vendor `0x51`)
 are validated on this handset, including the 30/60-second identity repeats.
 The power evidence is in `artifacts/console-power-0190.log`. The 0193 local
@@ -11,9 +14,9 @@ reserved events and one count inconsistency still block report coherence.
 At the user's request, [0194](#0194-opt-in-filtered-hid-for-springboard) adds
 experimental HID delivery for valid frames, dropping malformed frames. It is
 disabled by default. Hardware logs now confirm 60 down/up pairs through
-SweetHID; SpringBoard usability/alignment is pending. An
-[eight-core test](#0194-hid-delivery-confirmed-eight-core-lag-comparison) has been
-temporarily booted after the user reported severe single-core UI lag. The
+SweetHID. The user can now navigate SpringBoard with the
+[eight-core-configured test](#0194-hid-delivery-confirmed-eight-core-lag-comparison).
+Detailed alignment and responsiveness checks remain pending. The
 [0193 result](#0193-hardware-result-faster-reads-coherence-still-blocked) remains
 the evidence for the outstanding report faults.
 
@@ -1643,3 +1646,20 @@ all secondary CPUs reached XNU's running state.
 `daisylog=0` avoids the logger's single-core-only snapshot path. The existing
 on-device console file remains from the previous single-core test and must
 not be attributed to this SMP run. Filtered touch remains enabled continuously.
+
+### 0194 user confirms basic SpringBoard navigation
+
+The user reports that GPU acceleration is absent and touch responsiveness
+varies, but **they can navigate SpringBoard** with the temporarily booted SMP
+image (`a6678e5576c3376c4424704c10d65aab7fbe13c7aca7546fe49cea12a9c75fc1`).
+This confirms the basic usable-touch milestone beyond the earlier kernel
+down/up evidence. The image uses software rendering; GPU execution was not
+enabled by its command line.
+
+Keep this exact kernel/image as the interactive baseline. Remaining work is
+to characterize missed/offset contacts versus delayed UI response, refine
+touch consistency/alignment and investigate graphics acceleration. No measured
+frame rate or per-CPU online evidence was supplied; the image exposes eight
+CPU nodes and requests `cpus=8`. The earlier malformed-report findings and
+strict whole-frame filtering remain applicable. No new log was collected
+from this logging-disabled SMP run.

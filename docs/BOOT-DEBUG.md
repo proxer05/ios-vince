@@ -448,3 +448,13 @@ Temporary fastboot boot succeeded in 0.541 s. See
 for the full command and evidence. Runtime CPU count and responsiveness are
 pending. Persistent logging is off; the previous on-device log is not evidence
 from this new SMP boot.
+
+### Basic SpringBoard touch navigation confirmed
+
+The user confirms they can navigate SpringBoard with
+`artifacts/daisy-touch-hid-0194-smp/daisy-boot.img` (SHA-256
+`a6678e5576c3376c4424704c10d65aab7fbe13c7aca7546fe49cea12a9c75fc1`).
+Touch responsiveness is inconsistent and graphics remain unaccelerated.
+Preserve this image as the first user-confirmed navigable touch baseline.
+Detailed alignment, missed-contact behavior, frame rate and runtime CPU count
+remain unmeasured. See [the user result](TOUCHSCREEN-PLAN.md#0194-user-confirms-basic-springboard-navigation).
