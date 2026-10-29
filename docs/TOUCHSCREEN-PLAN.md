@@ -1256,3 +1256,45 @@ evidence to the previous moving-contact capture. Allow five minutes total
 runtime before returning to fastboot. Temporarily boot TWRP, extract to
 `artifacts/console-trace-0192.log`, and analyze with
 `python3 tools/analyze_daisy_reports.py artifacts/console-trace-0192.log`.
+
+### 0192 first trace: complete no-contact interval
+
+The user reported that touch diagnostic lines were no longer appearing.
+After returning to fastboot, temporarily booted TWRP (success in 1.775 s)
+and extracted `artifacts/console-trace-0192.log`: **412,236 bytes**, 4,215 lines,
+SHA-256 `58f0318dd662d81c3f683a5b1ce31b617ccff15ff787bf752a40875e82e4ebaf`.
+
+The user then clarified they were **AFK during the five-minute window and did
+not touch the screen in that interval**. The trace therefore provides a
+no-contact timing baseline, not evidence of a new failure to detect touches.
+It ends normally at its time limit:
+
+```text
+DAISY REPORT: progress ms300026 reads5406 ok5406 errors0 raw292 us27501/32982/145872 gap63617
+DAISY REPORT: done ms300027 reads5406 ok5406 errors0 raw292 reasontime
+```
+
+All **5,406 transfers** complete without a reported I²C error. The 292 saved
+raw frames are identical: `00` followed by 62 `ff` bytes, `irq1/1`, and
+`low0000000000000000`. No changed frame was recorded. The count-15 sentinel
+still fails report validation; it is not reinterpreted as a valid idle frame.
+The three identity/firmware/vendor checks and L10/L6 ready readbacks agree.
+No logger-stop/loss or kernel panic markers appear. The completed time limit
+explains why diagnostic output stopped after five minutes.
+
+Timing across **all attempts** is min/mean/max **27.501/32.982/145.872 ms**, with
+a maximum completed-byte gap of **63.617 ms**. Among saved samples, transfer
+min/median/max is 27.541/30.3355/110.574 ms, and median byte gap is 481 us.
+Phase medians after address/header/record0/record1/all data are
+2050.5/3418.5/6142/8857/30240 us. These now measure the transaction itself,
+including instrumentation and scheduling, rather than the whole poll cycle.
+No IRQ-low samples appear in saved frames. Contact-frame timing correlation
+remains pending; these data alone do not identify the cause of 0191's event 3.
+
+After the user explicitly confirmed readiness, reverified the **same** kernel,
+image and command line, rebooted TWRP to fastboot, confirmed `product: daisy`,
+and temporarily booted the image again (success in **0.533 s**). The user was
+asked to begin touching during boot: one-finger and two-finger ten-second holds,
+releases and slow movement within the first five minutes. The next extraction
+must use `artifacts/console-trace-0192-touch.log` to preserve this baseline.
+**Repeat hardware result pending.**

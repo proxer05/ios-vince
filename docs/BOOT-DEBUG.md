@@ -349,3 +349,20 @@ verification; temporary fastboot boot succeeded on `6790a29e0305` in 0.538 s.
 See [the timing/IRQ test](TOUCHSCREEN-PLAN.md#0192-timingirq-image-built-and-temporarily-booted)
 for the build command and steady/moving-contact capture instructions. The next
 recovery output is `artifacts/console-trace-0192.log`; hardware results are pending.
+
+### 0192 complete baseline saved; contact repeat booted
+
+Recovered `artifacts/console-trace-0192.log` (412,236 bytes, 4,215 lines,
+SHA-256 `58f0318dd662d81c3f683a5b1ce31b617ccff15ff787bf752a40875e82e4ebaf`).
+The capture completed normally after 300.027 seconds: 5,406 successful reads,
+zero transport errors, 292 identical no-contact/startup-sentinel frames.
+The user clarified they were AFK and did not touch during this interval.
+The disappearance of diagnostic lines is explained by the five-minute limit.
+The full completion/progress records validate sustained logging for this run;
+the saved frames do not validate contact reports.
+
+After the user confirmed readiness, reverified and temporarily booted the same
+0192 image again on `6790a29e0305` (fastboot success in 0.533 s). The repeat
+requests touches during the first five minutes, including steady one-/two-finger
+holds. Retrieve it as `artifacts/console-trace-0192-touch.log`; see
+[the baseline result](TOUCHSCREEN-PLAN.md#0192-first-trace-complete-no-contact-interval).
