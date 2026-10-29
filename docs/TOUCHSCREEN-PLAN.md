@@ -820,3 +820,39 @@ and mapping, the `snapshot half... state... tx... rx... bounds...` line,
 layout result/stage, and L10/L6 observations. Include any repeated 30/60-second
 output. The cmdline selects layout-only diagnostics with reset held low;
 it supplies neither `daisytouch_power` nor `sweethidtest`.
+
+### 0189 screen transcription and exact-layout replay
+
+The next user transcription reports heap `init1 free6f98 avail27068 ver7b0000`,
+item13 `off6718 size800 ext0`, selected CID4, item18 `off0 size58 ext60000`,
+and item342 `off800 size800 ext60000`. The snapshot is:
+
+```text
+DAISY RPM: snapshot half400 state0/4 tx120/120 rx70/70 bounds1
+```
+
+Reaching this snapshot means `dr_layout()` returned success (stage 6). The
+final result line was omitted. The FIFO is 2048 bytes with two 1024-byte rings;
+both rings are empty with aligned, in-range indices. Linux names states 0/4
+CLOSED/CLOSING. This is a pre-open snapshot, not an RPM handshake failure.
+Vendor `smd.c:1279–1331,1930–1958` handles close completion and initiates OPENING;
+the XNU client retains its bounded OPENING/OPENED handshake from mainline SMD.
+
+The transcribed mapped addresses (`86386718`, `68898`, `68800`) disagree with
+the supplied TOC and the code's `base + offset` print. Derived addresses are
+`86306718`, `60000`, `60800`; these are expected values, not corrected device
+observations. The `GPIO probe 0x36` transcription also differs from the linked
+`0x38` literal. Raw logs are needed to resolve these discrepancies.
+
+L10/L6 again report `21/09 ... v00/54` and `21/2a ... v00/04`. In the pinned
+vendor `drivers/regulator/qpnp-regulator.c`, **both subtypes are valid**:
+ULT-LDO P150 (`09`) and LV_P300 (`2a`), mapped at lines 1685/1689 to
+`ult_pldo_ranges` (line 453). Its selector formula is 1,750,000 + 12,500 × VSET
+microvolts: `54`/`04` encode 2.80 V/1.80 V settings, not measured outputs.
+L10's requested 2.85 V would encode `58`. Both reported `en00`; L6's earlier
+subtype changes still make complete, repeated raw records important.
+
+GCC/Clang sanitizer tests now replay the reported item13 offset, exact auxiliary
+info/FIFO placement, size and state/indices. They verify the derived address
+strings and zero diagnostic writes. The user requested persistent eMMC logging
+to replace screenshot transcription before continuing the hardware diagnosis.

@@ -57,6 +57,14 @@ static void mock_rpm_sleep(void);
             str(c), "-o", str(binary),
         ], check=True)
         result = subprocess.run([str(binary)], check=True, stdout=subprocess.PIPE, text=True)
+        # Replay the 0189 TOC/state transcription, checking derived physical addresses.
+        for line in (
+            "DAISY RPM: mapped item13 pa86306718 size800",
+            "DAISY RPM: mapped item18 pa60000 size58",
+            "DAISY RPM: mapped item342 pa60800 size800",
+            "DAISY RPM: snapshot half400 state0/4 tx120/120 rx70/70 bounds1",
+        ):
+            assert line in result.stdout.splitlines(), line
         print(result.stdout.splitlines()[-1])
 
 

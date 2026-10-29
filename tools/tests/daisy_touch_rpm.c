@@ -64,20 +64,20 @@ aux_item(unsigned id, uint32_t off, uint32_t n)
 static void
 daisy_aux_layout(bool aux_info, bool aux_fifo)
 {
-	/* Exact observed item13/table rows and item18; FIFO placement is a fixture. */
+	/* Observed 0189 table/aux allocations; primary info/FIFO are comparison fixtures. */
 	const unsigned flags[] = {0x20f, 0x210, 0x212, 0x213, 0x211};
-	item(13, 0x6710, 0x800);
+	item(13, 0x6718, 0x800);
 	for (unsigned i = 0; i < 5; i++) {
-		unsigned off = 0x6710 + 32 * (4 + i);
+		unsigned off = 0x6718 + 32 * (4 + i);
 		memcpy((char *)smem + off, "rpm_requests", sizeof("rpm_requests"));
 		smem[(off + 20) / 4] = 4 + i;
 		smem[(off + 24) / 4] = flags[i];
 		smem[(off + 28) / 4] = 1;
 	}
 	item(18, INFO_OFF, 88);
-	item(342, FIFO_OFF, 1024);
+	item(342, FIFO_OFF, 2048);
 	if (aux_info) { aux_item(18, 0, 88); peer_info = aux; }
-	if (aux_fifo) { aux_item(342, 0x1000, 1024); peer_fifo = aux + 0x1000 / 4; }
+	if (aux_fifo) { aux_item(342, 0x800, 2048); peer_fifo = aux + 0x800 / 4; }
 }
 
 static void
@@ -228,12 +228,14 @@ main(void)
 	/* The on-device layout selects edge 15/CID4, even beside other RPM edges. */
 	for (unsigned regions = 0; regions < 4; regions++) {
 		fresh_rpm(); daisy_aux_layout(regions & 1, regions & 2);
-		TX(DR_STATE) = RX(DR_STATE) = DR_OPENED;
-		TX(DR_HEAD) = 16; TX(DR_TAIL) = 4; RX(DR_HEAD) = 24; RX(DR_TAIL) = 8;
+		TX(DR_STATE) = 0; RX(DR_STATE) = 4; /* observed CLOSED/CLOSING */
+		TX(DR_HEAD) = TX(DR_TAIL) = 0x120;
+		RX(DR_HEAD) = RX(DR_TAIL) = 0x70;
 		static uint32_t before_smem[DR_SIZE / 4], before_aux[DR_AUX_SIZE / 4];
 		memcpy(before_smem, smem, sizeof(smem));
 		memcpy(before_aux, aux, sizeof(aux));
 		assert(daisy_touch_rpm_layout() == 0 && dr_layout_stage == 6);
+		assert(dr_half == 0x400);
 		assert(dr_tx == (vm_offset_t)peer_info && dr_out == (vm_offset_t)peer_fifo);
 		assert(aux_maps == (regions & 1u) + ((regions >> 1) & 1u));
 		assert(!memcmp(before_smem, smem, sizeof(smem)) && !memcmp(before_aux, aux, sizeof(aux)));
