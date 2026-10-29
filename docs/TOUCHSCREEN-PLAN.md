@@ -1543,3 +1543,38 @@ console logging, and the options above. Hardware checks are icon taps,
 left/right page swipes, scrolling and bottom-edge Home/app-switcher gestures.
 Save the next recovery log to `artifacts/console-hid-0194.log` and inspect
 `DAISY HID:` counters plus `SWEET HID: touch` down/up events.
+
+### 0194 HID image built and temporarily booted
+
+CI [40964379162](https://github.com/proxer05/ios-vince/actions/runs/40964379162)
+at `b6d0c87898c9a38665ad1678b8d955713e086026` passed the VINCE build and linked
+HID/diagnostic marker checks. Downloaded `xnu-kernel-vince` into
+`artifacts/kernel-0194/` and verified `SHA256SUMS`. Full CI log:
+`artifacts/daisy-touch-dev/ci-0194-success.log`.
+
+```sh
+VINCE_NO_FBCON=1 \
+DTB="$PWD/artifacts/daisy-dtb.bin" \
+PAYLOAD_CMDLINE='debug=0xc serial=3 cpus=1 keepsyms=1 io=0x3f -noprogress wdt=-1 wdt_test=no_user_checkin rd=mmcroot0 mmcrw=1 rootrw=1 unentitled_ios_sim_launch=1 launchd_unsecure_cache=1 ignition_level=1 vincefix=bluetool vincetouch=0 vincekeys=1 daisytouch=1 daisytouch_gpio=1 daisytouch_power=1 startup_debug=0 -disable_kprintf daisylog=1 daisytouch_busywait=1 daisytouch_hid=1' \
+tools/build_daisy.sh artifacts/kernel-0194/kernel.development.vince artifacts/daisy-touch-hid-0194
+fastboot -s 6790a29e0305 boot artifacts/daisy-touch-hid-0194/daisy-boot.img
+```
+
+- Kernel SHA-256: `010d54d08824cef3e5d28ae40ba553b36ae73469d319a26c1df4f024e8d71212`.
+- Image SHA-256: `8c016465633d449fa5efff04279cc96e741b8e2aff75f32ad9f9d1bf77e1304a`.
+- Image size: 17,944,576 bytes.
+- Build log: `artifacts/daisy-touch-dev/build-image-hid-0194.log`.
+
+Verified the Android header/hash, appended Daisy DTBs, empty `second`, full
+payload/ADT, RAM bounds, every kernel segment, exact HID command line and
+linked HID/logger/power markers. The ADT matches the known-working no-fbcon
+homescreen ADT except its fresh random seed. Persistent logging is enabled;
+raw capture/IRQ tracing and delayed identity probes are omitted from this
+interactive image. No simulated Home key is configured.
+
+Rebooted recovery to fastboot, confirmed `product: daisy`, and temporarily
+booted serial `6790a29e0305` successfully in **0.540 s**. The user was asked
+to swipe up to unlock, tap icons, swipe pages and check touch alignment.
+**SpringBoard interaction result pending.** HID has no five-minute time limit.
+After the user finishes and returns to fastboot, extract the persistent log
+to `artifacts/console-hid-0194.log` before another logging-enabled XNU boot.

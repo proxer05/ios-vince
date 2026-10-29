@@ -406,3 +406,24 @@ progress record has 901 successful reads and zero errors. The saved trace
 ends at 39.105 seconds without a completion summary. See
 [the detailed comparison](TOUCHSCREEN-PLAN.md#0193-hardware-result-faster-reads-coherence-still-blocked).
 Touch HID remains disabled; the phone is in temporary TWRP.
+
+### 0194 filtered touch HID boot
+
+At the user's request, `daisytouch_hid=1` now enables experimental delivery of
+valid FT5446 reports to SweetHID, dropping entire malformed frames and
+releasing stale contacts after 150 ms without a valid report. Host GPIO/HID
+tests pass with GCC and Clang ASan/UBSan. CI `40964379162` at `b6d0c87` passed
+the VINCE build and linked marker checks.
+
+The checksum-verified kernel in `artifacts/kernel-0194/` was assembled into
+`artifacts/daisy-touch-hid-0194/daisy-boot.img` (17,944,576 bytes; SHA-256
+`8c016465633d449fa5efff04279cc96e741b8e2aff75f32ad9f9d1bf77e1304a`).
+It uses the known-working artwork/no-fbcon ADT, persistent logging, the
+validated GPIO power/identity/busy-wait path, and continuous filtered HID.
+Boot structure, payload/ADT, RAM/segments, exact command line and linked
+markers passed verification. Temporary fastboot boot succeeded on
+`6790a29e0305` in **0.540 s**. The image runs touch continuously.
+
+See [the HID build/boot](TOUCHSCREEN-PLAN.md#0194-hid-image-built-and-temporarily-booted)
+for the exact command. User confirmation of icon taps, swipes and coordinate
+alignment is pending. Next recovery output: `artifacts/console-hid-0194.log`.
