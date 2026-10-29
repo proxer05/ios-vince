@@ -458,3 +458,19 @@ Touch responsiveness is inconsistent and graphics remain unaccelerated.
 Preserve this image as the first user-confirmed navigable touch baseline.
 Detailed alignment, missed-contact behavior, frame rate and runtime CPU count
 remain unmeasured. See [the user result](TOUCHSCREEN-PLAN.md#0194-user-confirms-basic-springboard-navigation).
+
+### First GPU register-access diagnostic
+
+The user accepted basic touch and requested GPU work. Recovery evidence
+confirms Adreno506v1 and matches the embedded PM4/ZAP firmware, with a PFP
+microcode mismatch. See [the GPU plan](GPU-PLAN.md) for memory-layout evidence
+and the staged hardware/rendering work.
+
+Temporarily booted `artifacts/daisy-gpu-regs-0194/daisy-boot.img` using the
+existing 0194 kernel with `adreno=6`, `cpus=1`, `daisylog=1`, filtered touch
+and no framebuffer console. SHA-256:
+`a4a14e9aa41ceab14b6682635066d185a0087a2c1778ca69f9f2692680a2338e`;
+17,944,576 bytes. Full image verification passed; fastboot handoff succeeded
+in 0.541 s. GPU hardware success remains pending the recovered log:
+`artifacts/console-gpu-regs-0194.log`. This image tests power/clocks/register
+access and does not select GPU command execution or userspace acceleration.

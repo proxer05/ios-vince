@@ -12,6 +12,10 @@ the 0194 filtered-HID image configured for eight CPUs and no persistent logger.
 Responsiveness remains inconsistent and GPU acceleration is not enabled.
 See [boot diagnostics](docs/BOOT-DEBUG.md) for image provenance and commands.
 
+**Current focus: GPU acceleration.** The first Adreno power/clock/register
+diagnostic has been temporarily booted; see the [GPU plan](docs/GPU-PLAN.md)
+for native firmware evidence, the test image and the remaining rendering work.
+
 **Touch identification:** TWRP confirmed **FocalTech FT5446** (`0x5422`),
 Ofilm touch panel + CSOT LCD, firmware `0x0c` on this handset. XNU's opt-in
 0190 test now confirms RPM L10/L6 ACKs, ready rails, and three successful GPIO
@@ -73,8 +77,8 @@ data. Keep a backup.
 
 ## Not Yet Done
 - daisy FT5446 touch consistency, alignment and report-coherence refinement: see the [staged plan](docs/TOUCHSCREEN-PLAN.md)
-- daisy-specific GPU zap/secure-memory address verification (same Adreno 506; CPU
-  rendering is enough for first boot)
+- Adreno 506 command execution, buffer mapping and iOS rendering integration:
+  see the [GPU plan](docs/GPU-PLAN.md)
 - daisy WLAN/BT calibration and MAC handling
 - audio, camera, sensors, charger/battery polish
 - renaming the internal board config from `VINCE` to `DAISY`
