@@ -311,3 +311,16 @@ first-attempt FT5446 identity reads, plus later userspace and both process
 sampler passes. See [the power-test result](TOUCHSCREEN-PLAN.md#0190-power-test-result-rpm-and-gpio-identity-validated)
 for the exact hardware evidence. The complete log was collected without
 copying or mounting the full HFS root; the device remains in TWRP.
+
+### 0191 report-capture boot
+
+CI `40952756300` successfully built the opt-in GPIO report capture at `38f3151`.
+The checksum-verified kernel is in `artifacts/kernel-0191/`; the assembled image
+is `artifacts/daisy-touch-reports-0191/daisy-boot.img` (17,928,192 bytes,
+SHA-256 `11cb751fe6f9daa33efd51d7bbc8b7848495f16fb8036f7a493c4310a665489b`).
+It retains the proven 0190 power/logging configuration and adds
+`daisytouch_reports=1`. Boot structure, payload, ADT and linked diagnostics
+passed verification; `fastboot boot` succeeded on `6790a29e0305` in 0.538 s.
+See [the report test](TOUCHSCREEN-PLAN.md#0191-report-test-image-built-and-temporarily-booted)
+for the complete build command and capture protocol. Report hardware evidence
+is pending recovery extraction to `artifacts/console-reports-0191.log`.

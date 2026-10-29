@@ -1060,3 +1060,33 @@ captures (`python3 tools/tests/test_daisy_report_analysis.py`).
 
 0191 kernel CI: `40952756300` at `38f315159658247a481e90f1973c75e0581f0579`,
 with `MACHINE_CONFIG=VINCE` and linked report-capture marker checks.
+
+### 0191 report-test image built and temporarily booted
+
+CI `40952756300` passed compilation and all linked marker checks. Downloaded
+`xnu-kernel-vince` to `artifacts/kernel-0191/` and verified its `SHA256SUMS`.
+Full CI log: `artifacts/daisy-touch-dev/ci-0191-success.log`.
+
+```sh
+VINCE_NO_FBCON=0 \
+DTB="$PWD/artifacts/daisy-dtb.bin" \
+PAYLOAD_CMDLINE='debug=0xc serial=3 cpus=1 keepsyms=1 io=0x3f -noprogress wdt=-1 wdt_test=no_user_checkin rd=mmcroot0 mmcrw=1 rootrw=1 unentitled_ios_sim_launch=1 launchd_unsecure_cache=1 ignition_level=1 vincefix=bluetool vincetouch=0 vincekeys=1 daisytouch=1 daisytouch_probe=1 daisytouch_gpio=1 daisytouch_power=1 startup_debug=0 -disable_kprintf daisylog=1 daisytouch_reports=1' \
+tools/build_daisy.sh artifacts/kernel-0191/kernel.development.vince artifacts/daisy-touch-reports-0191
+fastboot -s 6790a29e0305 boot artifacts/daisy-touch-reports-0191/daisy-boot.img
+```
+
+- Kernel SHA-256: `bd0f30acc4ea14a070b53c4f8ca29bd73a35be4ca2bc92def6b99f6b64fcd3b8`.
+- Image SHA-256: `11cb751fe6f9daa33efd51d7bbc8b7848495f16fb8036f7a493c4310a665489b`.
+- Image size: 17,928,192 bytes.
+- Build log: `artifacts/daisy-touch-dev/build-image-reports-0191.log`.
+
+Verified the Android header/hash, appended Daisy DTBs, empty `second`, complete
+payload/ADT, RAM bounds and all kernel segments, exact command line, and linked
+report/power/identity/logger markers. Confirmed `product: daisy` and temporarily
+booted serial `6790a29e0305`; fastboot succeeded in 0.538 s.
+
+**Hardware report result pending.** The user was asked for approximately ten
+seconds of idle, separated taps, slow swipes and two-finger movement with full
+releases, then five minutes total runtime before returning to fastboot. Retrieve
+`artifacts/console-reports-0191.log` through temporary TWRP and run the analyzer.
+The capture is diagnostic-only and emits no touch HID events.
