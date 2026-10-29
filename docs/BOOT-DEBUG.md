@@ -250,3 +250,31 @@ awaiting device validation:** let this boot run for 90 seconds, return to
 fastboot, temporarily boot TWRP, and pull the console file using the command
 above. A successful boot transfer alone does not prove the logger opened or
 flushed its file.
+
+### 0190 recovery extraction: early persistence confirmed
+
+Temporarily booted TWRP `3.7.1_12-0` on serial `6790a29e0305`; fastboot
+reported success in 1.903 s. The new pull tool extracted the file directly
+from the unmounted HFS `userdata` filesystem:
+
+```sh
+python3 tools/pull_daisy_console.py artifacts/console-0190.log --serial 6790a29e0305
+```
+
+- Recovered size: **24,817 bytes**, 354 lines.
+- SHA-256: `69aa08b03c877e4d43add25118e86507e61c529b9507c025d555ef201d8bfe62`.
+- Starts with the logger header followed by the Darwin kernel banner.
+- Includes the MMC write self-test, root mount, logger startup, complete first
+  RPM layout diagnostic, and subsequent launchd/userland output.
+- Ends at `exec usermanagerd [--init]`, after launchd's `13:08:44.263557` line.
+  No 30/60-second layout repeats, logger-stop, or RAM-loss marker are present.
+
+This validates early-buffer replay and persistence across the reboot to
+recovery, plus the direct single-file extraction path. Sustained logging is
+not yet validated by this capture. The boot's visible progress needs confirming.
+Source audit also identifies a retrieval limitation: journaled HFS's ordinary
+`hfs_fsync()` updates the catalog in a transaction, while `hfs_metasync()` is a
+no-op when a journal exists (`hfs_vnops.c:3214–3236,3262–3264`); full fsync uses
+`HFS_FLUSH_FULL`. SleuthKit reads the catalog without replaying pending HFS
+journal transactions. Thus this recovered EOF alone cannot distinguish a
+stalled boot/logger from newer metadata still residing in the journal.

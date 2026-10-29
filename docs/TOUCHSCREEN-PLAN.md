@@ -863,3 +863,38 @@ layout-only logging image was temporarily booted on serial `6790a29e0305`.
 See [boot diagnostics](BOOT-DEBUG.md#0190-logging-image-ci-passed-and-temporary-boot-sent)
 for hashes and reproduction. Next collect `/private/var/log/daisy-console.log`
 through TWRP to resolve the address/state transcription before a power test.
+
+### 0190 raw eMMC log: mapping ambiguity resolved
+
+Recovered `artifacts/console-0190.log` through TWRP (24,817 bytes;
+SHA-256 `69aa08b03c877e4d43add25118e86507e61c529b9507c025d555ef201d8bfe62`).
+The raw file establishes the previously ambiguous literals and addresses:
+
+```text
+DAISY TOUCH: GPIO probe 0x38; QUP bypass, no HID
+DAISY TOUCH: rail observer arb 20010000 (read only)
+DAISY RPM: mapped item13 pa86306718 size800
+DAISY RPM: mapped item18 pa60000 size58
+DAISY RPM: mapped item342 pa60800 size800
+DAISY RPM: snapshot half400 state0/4 tx120/120 rx78/78 bounds1
+DAISY RPM: layout result 0 stage6 (no writes)
+DAISY TOUCH: L10 p149 r0 type 21/09 st00 en00 v00/54
+DAISY TOUCH: L6 p145 r0 type 21/2a st82 en80 v00/04
+DAISY TOUCH: layout-only reset0 SDA1 SCL1 irq1
+```
+
+Heap and allocation metadata match the 0189 replay fixture; CID4 is selected,
+item266 is unallocated, and both FIFO halves are empty with valid indices.
+The actual physical addresses agree with the bounded mapper arithmetic. No
+mapping changes are justified. The actual observer version is `0x20010000`,
+not the earlier transcribed `0x20610000`.
+
+Both pre-layout and post-layout rail reads agree within this capture. L6 now
+reports `en80` with status `82`: enabled/ready bits are set, and the voltage
+selector encodes 1.80 V. L10 remains disabled/not-ready with a 2.80 V selector.
+These are register observations, not measured rail voltages. The diagnostic
+made no RPM votes and held reset low; FT5446 identity remains untested here.
+
+The saved file ends during early userspace and contains only the first layout
+pass. Confirm sustained logging/recovery visibility before relying on it for
+30/60-second comparisons; see the HFS journal caveat in the boot diagnostics.
