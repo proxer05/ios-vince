@@ -71,15 +71,19 @@ the running recovery's Linux 4.9.337 Onion kernel.
 
 ### 1. Establish a repeatable controller probe
 
-Add the next board patch, provisionally `0184-daisy-ft5446-touch.patch`, after
-the working 0183 baseline. Extend `vince_input.c` with an explicit FT5446
-selection and reuse the QUP/TLMM helpers. Keep `MACHINE_CONFIG=VINCE`.
+Patch `0184-daisy-ft5446-probe.patch` now extends `vince_input.c` after the
+working 0183 baseline with explicit FT5446 selection and reused QUP/TLMM
+helpers. Keep `MACHINE_CONFIG=VINCE`.
 
-Proposed new options, **not implemented yet**:
+Implemented probe-stage options (hardware validation pending):
 
 - `daisytouch=1`: select FT5446 input; absent/zero keeps Daisy touch disabled.
-- `daisytouch_probe=1`: with `daisytouch=1`, initialize and report identity
-  without sending finger events.
+- `daisytouch_probe=1`: with `daisytouch=1`, repeat the probe summary after
+  30 and 60 seconds to aid console observation.
+
+For this stage, `daisytouch=1` always runs a probe only: identity and one
+63-byte report per summary, with **no finger events**. Omit both options
+to preserve the known-working no-touch baseline.
 
 The selector must give one thread exclusive ownership of QUP3. Daisy test
 cmdlines use `vincetouch=0 daisytouch=1`; the FT5446 selector must work with
@@ -182,6 +186,19 @@ image hash and observed test results; publish the verified changes to
 
 ## Immediate next implementation
 
-Implement stage 1 and the shared I²C register-read transport, build one
-probe-only CI kernel, and verify `0x5422` in XNU. That establishes the
-power/reset/bus foundation before report decoding and iOS gesture debugging.
+Stage 1 and the combined-register I²C transport are implemented. Host tests
+run the patched C against a deterministic MMIO model, checking repeated-START
+tags, 1/2/31/32/63/255-byte FIFO and block reads, buffer boundaries, NACK and
+late-NACK handling, incomplete reads, bus-idle and input-done timeouts,
+recovery, exclusive source selection, and the 20/200 ms reset sequence:
+
+```sh
+python3 tools/tests/test_daisy_touch_probe.py
+```
+
+These tests do not prove QUP behavior on-device. The first probe intentionally
+does not change PMIC rails: identity reads will establish whether power is
+retained across fastboot handoff, before adding any explicit enables.
+Build the probe-only CI kernel and verify `0x5422` plus `report63 0` in XNU.
+That establishes the power/reset/bus foundation before report decoding and
+iOS gesture debugging. A CI marker check ensures the FT5446 probe was linked.
