@@ -1369,3 +1369,35 @@ They exercise complete traced reads, ACK/NACK/STOP failure cleanup at every
 clock phase, default-off/layout/power/identity gating and the delay comparison.
 All report validation and HID gates remain in effect; hardware comparison is
 pending the next CI kernel.
+
+### 0193 counter-delay image built and temporarily booted
+
+CI `40961297908` at `7aed128c699398fc958e559a2b76ac42bb20d87b` passed the
+VINCE build and linked diagnostic checks. Downloaded `xnu-kernel-vince` to
+`artifacts/kernel-0193/` and verified `SHA256SUMS`. Full CI log:
+`artifacts/daisy-touch-dev/ci-0193-success.log`.
+
+```sh
+VINCE_NO_FBCON=0 \
+DTB="$PWD/artifacts/daisy-dtb.bin" \
+PAYLOAD_CMDLINE='debug=0xc serial=3 cpus=1 keepsyms=1 io=0x3f -noprogress wdt=-1 wdt_test=no_user_checkin rd=mmcroot0 mmcrw=1 rootrw=1 unentitled_ios_sim_launch=1 launchd_unsecure_cache=1 ignition_level=1 vincefix=bluetool vincetouch=0 vincekeys=1 daisytouch=1 daisytouch_probe=1 daisytouch_gpio=1 daisytouch_power=1 startup_debug=0 -disable_kprintf daisylog=1 daisytouch_reports=1 daisytouch_trace=1 daisytouch_busywait=1' \
+tools/build_daisy.sh artifacts/kernel-0193/kernel.development.vince artifacts/daisy-touch-busywait-0193
+fastboot -s 6790a29e0305 boot artifacts/daisy-touch-busywait-0193/daisy-boot.img
+```
+
+- Kernel SHA-256: `859f9ac987af498ffc13a564b0606a41a9b2403600aecc905f3c74b354dda697`.
+- Image SHA-256: `29506ebc17b44c188a1ffd2da24f0ab4e8a9e8839eae5cbc1eaae71bf0fe62a9`.
+- Image size: 17,928,192 bytes.
+- Build log: `artifacts/daisy-touch-dev/build-image-busywait-0193.log`.
+
+Validated the boot header/hash, appended Daisy DTBs, empty `second`, complete
+payload/ADT, RAM bounds, every kernel segment, exact busy-wait command line,
+and linked delay-comparison/trace/power/identity/logger markers. After the user
+confirmed readiness, rebooted TWRP to fastboot, confirmed `product: daisy`, and
+temporarily booted serial `6790a29e0305` (success in **0.541 s**).
+
+**Hardware result pending.** Requested one-/two-finger holds, slow swipes and
+full releases during the first five minutes. Save the next extraction as
+`artifacts/console-busywait-0193.log`. Compare `delay5 legacy` / `delay5 busy`
+measurements, complete-transfer and byte-gap timings, IRQ samples and contact
+validity against the 0192 touch trace. The test emits no touch HID events.

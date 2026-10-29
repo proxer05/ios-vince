@@ -377,3 +377,17 @@ two-contact samples, and three malformed contact frames. The timing points
 to generic XNU `delay()` as a candidate for the slow GPIO bit clock; see
 [the contact analysis and 0193 comparison](TOUCHSCREEN-PLAN.md#0192-contact-trace-timing-suspect-identified).
 The phone is in temporary TWRP after collection.
+
+### 0193 local GPIO delay comparison boot
+
+CI `40961297908` at `7aed128` passed the VINCE build and linked marker checks.
+The verified kernel in `artifacts/kernel-0193/` was assembled into
+`artifacts/daisy-touch-busywait-0193/daisy-boot.img` (17,928,192 bytes;
+SHA-256 `29506ebc17b44c188a1ffd2da24f0ab4e8a9e8839eae5cbc1eaae71bf0fe62a9`).
+It adds `daisytouch_busywait=1` to the 0192 trace/power/logger configuration.
+Boot structure, payload/ADT, RAM/segments, command line and diagnostic markers
+passed verification. After the user confirmed readiness, temporary fastboot
+boot succeeded on `6790a29e0305` in 0.541 s. See
+[the 0193 test](TOUCHSCREEN-PLAN.md#0193-counter-delay-image-built-and-temporarily-booted)
+for the command and expected evidence. Next recovery output:
+`artifacts/console-busywait-0193.log`.
