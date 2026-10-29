@@ -213,3 +213,40 @@ IOUserClient, GEM-style buffers, submissions, fences, parameter queries, and
 the physical-address compile fixes. The service starts after successful
 Adreno step 11; the existing `gpu=1`/`adreno=` bring-up selectors control it.
 This imports the upstream interface; Daisy GPU execution remains unvalidated.
+
+## 0190 logging image: CI passed and temporary boot sent
+
+CI run [40944810745](https://github.com/proxer05/ios-vince/actions/runs/40944810745)
+passed at `0278296c21a5fae0ca0d9aaac2c82d941d705019`, using
+`MACHINE_CONFIG=VINCE`. The log confirms 0190 applied, `daisy_log.o` and
+`VinceGPU.cpo` compiled, and the linked Bluetooth/touch/RPM/logger/GPU markers
+passed. The downloaded kernel matches CI's `SHA256SUMS`.
+
+- Kernel: `artifacts/kernel-0190/kernel.development.vince`.
+- Kernel SHA-256: `cf464faa3b28090c6c04591c1f74a914fdb086482f3bd9194d5b2f67676b2d94`.
+- Image: `artifacts/daisy-console-0190/daisy-boot.img` (17,928,192 bytes).
+- Image SHA-256: `358d15f028098ad5fa5477617f1c2a5f99fa3392172b5ad80db1a742a9521e76`.
+- Logs: `artifacts/daisy-touch-dev/ci-build-0190.log` and
+  `build-image-0190.log`; the first failed build is retained as
+  `ci-build-0190-first-failed.log`.
+
+```sh
+VINCE_NO_FBCON=0 \
+DTB="$PWD/artifacts/daisy-dtb.bin" \
+PAYLOAD_CMDLINE='debug=0xc serial=3 cpus=1 keepsyms=1 io=0x3f -noprogress wdt=-1 wdt_test=no_user_checkin rd=mmcroot0 mmcrw=1 rootrw=1 unentitled_ios_sim_launch=1 launchd_unsecure_cache=1 ignition_level=1 vincefix=bluetool vincetouch=0 vincekeys=1 daisytouch=1 daisytouch_probe=1 daisytouch_gpio=1 daisytouch_rpm_diag=1 startup_debug=0 -disable_kprintf daisylog=1' \
+tools/build_daisy.sh artifacts/kernel-0190/kernel.development.vince artifacts/daisy-console-0190
+fastboot -s 6790a29e0305 boot artifacts/daisy-console-0190/daisy-boot.img
+```
+
+Validated the Android v0 header/hash, exact appended Daisy DTBs, empty `second`,
+complete embedded ADT, every kernel segment, RAM bounds, exact cmdline, and
+linked markers before sending the image. The ADT matches 0189 apart from its
+random seed. The cmdline adds only `daisylog=1` to the prior layout-only boot;
+touch remains in read-only RPM layout mode, with GPU bring-up unselected.
+
+Fastboot on serial `6790a29e0305` reported successful transfer and temporary
+boot in 0.549 s. No partition was flashed. **Filesystem persistence is still
+awaiting device validation:** let this boot run for 90 seconds, return to
+fastboot, temporarily boot TWRP, and pull the console file using the command
+above. A successful boot transfer alone does not prove the logger opened or
+flushed its file.

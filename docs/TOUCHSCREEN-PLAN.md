@@ -856,3 +856,10 @@ GCC/Clang sanitizer tests now replay the reported item13 offset, exact auxiliary
 info/FIFO placement, size and state/indices. They verify the derived address
 strings and zero diagnostic writes. The user requested persistent eMMC logging
 to replace screenshot transcription before continuing the hardware diagnosis.
+
+The 0190 kernel now includes the opt-in HFS console worker (`daisylog=1`) and
+the requested upstream GPU refresh. CI `40944810745` passed, and the validated
+layout-only logging image was temporarily booted on serial `6790a29e0305`.
+See [boot diagnostics](BOOT-DEBUG.md#0190-logging-image-ci-passed-and-temporary-boot-sent)
+for hashes and reproduction. Next collect `/private/var/log/daisy-console.log`
+through TWRP to resolve the address/state transcription before a power test.
