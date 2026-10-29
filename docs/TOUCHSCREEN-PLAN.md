@@ -202,3 +202,42 @@ retained across fastboot handoff, before adding any explicit enables.
 Build the probe-only CI kernel and verify `0x5422` plus `report63 0` in XNU.
 That establishes the power/reset/bus foundation before report decoding and
 iOS gesture debugging. A CI marker check ensures the FT5446 probe was linked.
+
+## First probe image — 2026-10-29
+
+CI run [40896531839](https://github.com/proxer05/ios-vince/actions/runs/40896531839)
+passed for commit `8a2c235cc0d673f8b8c56aeb44d3b167c9d91e5a`.
+The log explicitly confirms application of `0184-daisy-ft5446-probe.patch`;
+the linked kernel's Bluetooth and FT5446 marker checks passed.
+
+- Kernel: `artifacts/kernel-0184/kernel.development.vince`.
+- Kernel SHA-256: `35b7f211e070eec8289ad1b91feb5f4f75cfb024d27bf1e7ae766025571e2161`.
+- Image: `artifacts/daisy-touch-probe-0184/daisy-boot.img`.
+- Image SHA-256: `a4de08edd3b0f8eb85b6c64107c21f4eb5d21f32beaf9ed1f2d5803f8b541fa9`.
+
+```sh
+VINCE_NO_FBCON=0 \
+DTB="$PWD/artifacts/daisy-dtb.bin" \
+PAYLOAD_CMDLINE='debug=0xc serial=3 cpus=1 keepsyms=1 io=0x3f -noprogress wdt=-1 wdt_test=no_user_checkin rd=mmcroot0 mmcrw=1 rootrw=1 unentitled_ios_sim_launch=1 launchd_unsecure_cache=1 ignition_level=1 vincefix=bluetool vincetouch=0 vincekeys=1 daisytouch=1 daisytouch_probe=1 startup_debug=0 -disable_kprintf' \
+tools/build_daisy.sh artifacts/kernel-0184/kernel.development.vince artifacts/daisy-touch-probe-0184
+fastboot -s 6790a29e0305 boot artifacts/daisy-touch-probe-0184/daisy-boot.img
+```
+
+This diagnostic image re-enables the framebuffer console to observe probe
+results; it is not the no-console UI baseline. Startup phase and kprintf
+output are suppressed to reduce noise, and automatic Home presses are omitted.
+The packed image's artwork traits, RAM configuration, embedded ADT, appended
+Android DTB and empty `second` field were verified. Phandle numbering shifts
+when the console node is added; the artwork values are unchanged.
+
+Fastboot reported successful transfer and boot. **The on-screen probe outcome
+is still awaiting user observation**, so neither chip identity nor the 63-byte
+transport is yet verified in XNU. Expected summary:
+
+```text
+DAISY TOUCH: FT5446 id 5422 fw 0c vendor 51
+DAISY TOUCH: report63 0 count ... irq ...; probe only
+```
+
+The summary repeats after 30 and 60 seconds. `report63 0` means transport
+success, not validation of every contact record or proof of iOS touch input.
