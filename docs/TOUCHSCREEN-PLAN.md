@@ -659,10 +659,43 @@ mode; selector precedence over power/identity; reset-low and released bus lines;
 agreeing reads; stale error-without-DONE timeout; completed denied reads;
 unstable read rejection; and all prior transport/RPM safety cases.
 
-**0188 CI/image/device results pending.**
-
 The Daisy vendor FT5446 driver was rechecked before publishing 0188. It still
 confirms `vdd` from L10 (DT-fixed 2.85 V), `vcc_i2c` from L6 (1.8 V), reset low
 for 20 ms then a 200 ms settle, IDs at `0xa3`/`0x9f`, and a combined register-0
 read of `3 + 10 * 6 = 63` bytes. No L5 vote or HID-before-identity behavior is
 supported by that Linux evidence.
+
+### RPM layout-only diagnostic image — 2026-10-29
+
+CI run [40931904580](https://github.com/proxer05/ios-vince/actions/runs/40931904580)
+passed for commit `b9a4c9b6c2864e73c41a760999abbf69054c7c7e`, retaining
+`MACHINE_CONFIG=VINCE`. The log confirms 0188 applied, `daisy_touch_rpm.c`
+compiled, and all linked Bluetooth/touch/RPM diagnostic markers passed. The
+downloaded kernel matches CI's `SHA256SUMS`.
+
+- Kernel: `artifacts/kernel-0188/kernel.development.vince`.
+- Kernel SHA-256: `725e05cf74bea2ec6a2dd07e90304bd6e509af0dffa5bdfb93b6d1baeaa1beac`.
+- Image: `artifacts/daisy-touch-layout-0188/daisy-boot.img` (17,920,000 bytes).
+- Image SHA-256: `8ae287175829a748232c6c5be5c3a22d7d376ce49b08b1473643badffdffd200`.
+- Logs: `artifacts/daisy-touch-dev/ci-build-0188.log` and
+  `build-image-0188.log`.
+
+```sh
+VINCE_NO_FBCON=0 \
+DTB="$PWD/artifacts/daisy-dtb.bin" \
+PAYLOAD_CMDLINE='debug=0xc serial=3 cpus=1 keepsyms=1 io=0x3f -noprogress wdt=-1 wdt_test=no_user_checkin rd=mmcroot0 mmcrw=1 rootrw=1 unentitled_ios_sim_launch=1 launchd_unsecure_cache=1 ignition_level=1 vincefix=bluetool vincetouch=0 vincekeys=1 daisytouch=1 daisytouch_probe=1 daisytouch_gpio=1 daisytouch_rpm_diag=1 startup_debug=0 -disable_kprintf' \
+tools/build_daisy.sh artifacts/kernel-0188/kernel.development.vince artifacts/daisy-touch-layout-0188
+fastboot -s 6790a29e0305 boot artifacts/daisy-touch-layout-0188/daisy-boot.img
+```
+
+Verified the Android v0 header, exact appended Daisy DTBs, empty `second`,
+embedded ADT and payload, RAM/geometry properties, exact layout-only cmdline,
+and linked 0188 markers. Neither `daisytouch_power` nor `sweethidtest` is in the
+cmdline. Fastboot reported successful transfer and temporary boot in 0.539 s;
+no partition was flashed.
+
+**Awaiting on-screen results.** After at least 60 seconds, capture the complete
+`DAISY RPM:` and `DAISY TOUCH:` block. The required evidence is the heap line,
+item 13 and item 266 metadata/candidates, selected CID, stage/result, all L10/L6
+observer lines, reset/SDA/SCL levels, and the repeated 30/60-second output. This
+image performs no RPM/SMD/PMIC/I²C writes and emits no HID events.
