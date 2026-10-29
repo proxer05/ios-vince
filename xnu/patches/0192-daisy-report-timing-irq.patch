@@ -1,0 +1,201 @@
+diff --git a/bsd/dev/vince_input.c b/bsd/dev/vince_input.c
+index f1a7b49..9b48208 100644
+--- a/bsd/dev/vince_input.c
++++ b/bsd/dev/vince_input.c
+@@ -34,6 +34,8 @@
+  * and supersedes power/identity probes. It needs daisytouch=1 daisytouch_gpio=1.
+  * daisytouch_reports=1 captures coherent 63-byte GPIO reports for up to five
+  * minutes after successful RPM power and identity. Raw logging only, no HID.
++ * daisytouch_trace=1 adds per-byte timing/IRQ observations to report capture.
++ * It changes no bus delays or polling policy, and is disabled by default.
+  */
+ #if defined(ARM64_BOARD_CONFIG_VINCE)
+ #include <sys/param.h>
+@@ -129,7 +131,7 @@ static bool input_started;
+ static int keys_chan, touch_chan;
+ static int daisy_touch, daisy_probe;
+ static int daisy_diag, daisy_gpio, daisy_power;
+-static int daisy_rpm_diag, daisy_reports;
++static int daisy_rpm_diag, daisy_reports, daisy_trace;
+ static uint32_t qup_last_bus_error, qup_last_error;
+ 
+ static uint32_t
+@@ -810,37 +812,79 @@ fts_gpio_get(uint8_t *byte, bool ack)
+ 	return r;
+ }
+ 
++/* Relative microseconds, including observation overhead and scheduling.
++ * IRQ low bit 0 is sampled before START; bit n follows completed byte n.
++ * These 64 observations can miss pulses: this is not an interrupt counter.
++ */
++struct fts_gpio_trace {
++	uint64_t start, setup, header, point0, point1, data, total, gap, low;
++};
++
++static uint64_t
++fts_trace_us(uint64_t start)
++{
++	uint64_t ns;
++	absolutetime_to_nanoseconds(mach_absolute_time() - start, &ns);
++	return ns / 1000u;
++}
++
+ /* Stage: 1 START, 2 addr-W, 3 register, 4 RESTART, 5 addr-R, 6 data, 7 STOP. */
+ static int
+-fts_gpio_read_block(uint8_t reg, uint8_t *value, unsigned count, unsigned *stage, unsigned *received)
++fts_gpio_read_transfer(uint8_t reg, uint8_t *value, unsigned count, unsigned *stage,
++    unsigned *received, struct fts_gpio_trace *trace)
+ {
+ 	/* Publish only after every byte and STOP succeeds; never expose a partial frame. */
+ 	uint8_t v[FTS_REPORT_LEN];
+ 	if (stage) { *stage = 0; }
+ 	if (received) { *received = 0; }
+ 	if (!value || !stage || !received || !count || count > sizeof(v)) { return -1; }
++	if (trace) {
++		memset(trace, 0, sizeof(*trace));
++		trace->start = mach_absolute_time();
++		trace->low = !fts_gpio_level(GPIO_ATTN);
++	}
+ 	*stage = 1;
+ 	int r = fts_gpio_start();
+ 	if (!r) { *stage = 2; r = fts_gpio_put(FTS_ADDR << 1); }
+ 	if (!r) { *stage = 3; r = fts_gpio_put(reg); }
+ 	if (!r) { *stage = 4; r = fts_gpio_start(); }
+ 	if (!r) { *stage = 5; r = fts_gpio_put((FTS_ADDR << 1) | 1u); }
++	if (!r && trace) { trace->setup = fts_trace_us(trace->start); }
+ 	for (unsigned i = 0; i < count && !r; i++) {
+ 		*stage = 6;
+ 		r = fts_gpio_get(&v[i], i + 1 < count);
+-		if (!r) { *received = i + 1; }
++		if (!r) {
++			*received = i + 1;
++			if (trace) {
++				uint64_t now = fts_trace_us(trace->start);
++				uint64_t gap = now - (i ? trace->data : trace->setup);
++				if (gap > trace->gap) { trace->gap = gap; }
++				trace->data = now;
++				if (i == 2) { trace->header = now; }
++				if (i == 8) { trace->point0 = now; }
++				if (i == 14) { trace->point1 = now; }
++				if (!fts_gpio_level(GPIO_ATTN)) { trace->low |= 1ull << (i + 1); }
++			}
++		}
+ 	}
+ 	int stop = fts_gpio_stop();
+ 	if (!r) { *stage = 7; r = stop; }
+ 	/* No low output survives any error, even an unsuccessful STOP. */
+ 	fts_gpio_line(GPIO_SDA, true);
+ 	fts_gpio_line(GPIO_SCL, true);
++	if (trace) { trace->total = fts_trace_us(trace->start); }
+ 	if (!r) {
+ 		memcpy(value, v, count);
+ 	}
+ 	return r;
+ }
+ 
++static int
++fts_gpio_read_block(uint8_t reg, uint8_t *value, unsigned count, unsigned *stage, unsigned *received)
++{
++	return fts_gpio_read_transfer(reg, value, count, stage, received, NULL);
++}
++
+ static int
+ fts_gpio_read(uint8_t reg, uint8_t *value, unsigned *stage)
+ {
+@@ -902,6 +946,20 @@ fts_gpio_summary(void)
+ #define FTS_CAPTURE_MS 300000u
+ #define FTS_CAPTURE_LIMIT 4096u
+ 
++struct fts_trace_stats {
++	uint64_t min, sum, max, gap;
++};
++
++static void
++fts_trace_progress(uint64_t ms, unsigned reads, unsigned good, unsigned errors,
++    unsigned raw, const struct fts_trace_stats *s)
++{
++	if (!reads) { return; }
++	printf("DAISY REPORT: progress ms%llu reads%u ok%u errors%u raw%u us%llu/%llu/%llu gap%llu\n",
++	    (unsigned long long)ms, reads, good, errors, raw, (unsigned long long)s->min,
++	    (unsigned long long)(s->sum / reads), (unsigned long long)s->max, (unsigned long long)s->gap);
++}
++
+ static uint64_t
+ fts_capture_elapsed(uint64_t start)
+ {
+@@ -919,16 +977,29 @@ fts_gpio_capture(void)
+ {
+ 	uint8_t report[FTS_REPORT_LEN], previous[FTS_REPORT_LEN];
+ 	uint64_t start = mach_absolute_time(), last_log = 0;
++	uint64_t next_progress = 10000;
++	struct fts_trace_stats stats = { .min = ~0ull };
++	bool trace = daisy_trace == 1;
+ 	unsigned reads = 0, good = 0, errors = 0, consecutive = 0, raw = 0, check = 30000;
+ 	const char *reason = "time";
+ 	printf("DAISY REPORT: begin reg00 bytes63 interval20ms duration300000ms limit4096; no HID\n");
++	if (trace) {
++		printf("DAISY REPORT: trace v1 phases=addr,header,p0,p1,data low=before,byte1..63; polling unchanged\n");
++	}
+ 	while (fts_capture_elapsed(start) < FTS_CAPTURE_MS) {
+ 		uint64_t ms = fts_capture_elapsed(start);
+ 		unsigned stage = 0, received = 0;
++		struct fts_gpio_trace t = {0};
+ 		bool irq_before = fts_gpio_level(GPIO_ATTN);
+-		int r = fts_gpio_read_block(0, report, sizeof(report), &stage, &received);
++		int r = fts_gpio_read_transfer(0, report, sizeof(report), &stage, &received, trace ? &t : NULL);
+ 		bool irq_after = fts_gpio_level(GPIO_ATTN);
+ 		reads++;
++		if (trace) {
++			if (t.total < stats.min) { stats.min = t.total; }
++			if (t.total > stats.max) { stats.max = t.total; }
++			if (t.gap > stats.gap) { stats.gap = t.gap; }
++			stats.sum += t.total;
++		}
+ 		if (!r && received != sizeof(report)) { r = -7; }
+ 		if (r) {
+ 			errors++;
+@@ -949,13 +1020,26 @@ fts_gpio_capture(void)
+ 					hex[2 * i + 1] = digits[report[i] & 15];
+ 				}
+ 				hex[sizeof(hex) - 1] = 0;
+-				printf("DAISY REPORT: seq%u ms%llu irq%u/%u got63 data%s\n",
+-				    reads, (unsigned long long)ms, irq_before, irq_after, hex);
++				if (trace) {
++					printf("DAISY REPORT: seq%u ms%llu irq%u/%u got63 data%s us%llu phase%llu/%llu/%llu/%llu/%llu gap%llu low%016llx\n",
++					    reads, (unsigned long long)ms, irq_before, irq_after, hex,
++					    (unsigned long long)t.total, (unsigned long long)t.setup, (unsigned long long)t.header,
++					    (unsigned long long)t.point0, (unsigned long long)t.point1, (unsigned long long)t.data,
++					    (unsigned long long)t.gap, (unsigned long long)t.low);
++				} else {
++					printf("DAISY REPORT: seq%u ms%llu irq%u/%u got63 data%s\n",
++					    reads, (unsigned long long)ms, irq_before, irq_after, hex);
++				}
+ 				last_log = ms;
+ 				if (++raw == FTS_CAPTURE_LIMIT) { reason = "limit"; break; }
+ 			}
+ 			memcpy(previous, report, sizeof(report));
+ 		}
++		if (trace && fts_capture_elapsed(start) >= next_progress) {
++			uint64_t elapsed = fts_capture_elapsed(start);
++			fts_trace_progress(elapsed, reads, good, errors, raw, &stats);
++			next_progress = elapsed + 10000;
++		}
+ 		if (daisy_probe && ms >= check && check <= 60000) {
+ 			fts_rail_summary();
+ 			if (!fts_gpio_summary()) { reason = "identity"; break; }
+@@ -963,6 +1047,7 @@ fts_gpio_capture(void)
+ 		}
+ 		in_sleep(&touch_chan, 20);
+ 	}
++	if (trace) { fts_trace_progress(fts_capture_elapsed(start), reads, good, errors, raw, &stats); }
+ 	printf("DAISY REPORT: done ms%llu reads%u ok%u errors%u raw%u reason%s\n",
+ 	    (unsigned long long)fts_capture_elapsed(start), reads, good, errors, raw, reason);
+ }
+@@ -1187,6 +1272,7 @@ vince_input_start(void)
+ 	(void)PE_parse_boot_argn("daisytouch_power", &daisy_power, sizeof(daisy_power));
+ 	(void)PE_parse_boot_argn("daisytouch_rpm_diag", &daisy_rpm_diag, sizeof(daisy_rpm_diag));
+ 	(void)PE_parse_boot_argn("daisytouch_reports", &daisy_reports, sizeof(daisy_reports));
++	(void)PE_parse_boot_argn("daisytouch_trace", &daisy_trace, sizeof(daisy_trace));
+ 	tlmm = ml_io_map(TLMM_PA, TLMM_SIZE);
+ 	if (!tlmm) {
+ 		printf("VINCE INPUT: TLMM mapping failed\n");

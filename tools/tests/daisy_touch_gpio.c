@@ -7,6 +7,8 @@ static struct {
 	uint8_t bytes[128];
 	uint8_t report[FTS_REPORT_LEN];
 	unsigned report_reads;
+	bool irq_pattern;
+	unsigned irq_reads, pause_byte, pause_us;
 } wire;
 enum { W_RX, W_ACK, W_TX, W_NACK, W_IDLE };
 
@@ -41,6 +43,9 @@ wire_clock(void)
 			wire.master_ack = !wire.sda;
 			if (wire.sda) { wire.master_nacks++; }
 			else { wire.master_acks++; }
+			if (wire.pause_byte == wire.master_acks + wire.master_nacks) {
+				mock_time_ns += (uint64_t)wire.pause_us * 1000u;
+			}
 			break;
 		}
 	} else {

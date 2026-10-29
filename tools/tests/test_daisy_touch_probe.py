@@ -32,6 +32,7 @@ def main():
             "0187-daisy-touch-rpm-power.patch",
             "0188-daisy-rpm-layout-diagnostic.patch",
             "0191-daisy-gpio-report-capture.patch",
+            "0192-daisy-report-timing-irq.patch",
         ):
             subprocess.run([
                 "git", "-C", str(work), "apply", "--include=bsd/dev/vince_input.c",
@@ -64,6 +65,13 @@ def main():
             assert reason in result.stdout, reason
         frames = re.findall(r"DAISY REPORT: seq\d+ ms\d+ irq[01]/[01] got63 data([0-9a-f]+)", result.stdout)
         assert frames and all(len(frame) == 126 for frame in frames)
+        traces = re.findall(r" us(\d+) phase(\d+)/(\d+)/(\d+)/(\d+)/(\d+) gap(\d+) low([0-9a-f]{16})", result.stdout)
+        assert traces
+        for trace in traces:
+            total, setup, header, p0, p1, data, gap = map(int, trace[:7])
+            assert 0 < setup < header < p0 < p1 < data <= total
+            assert 0 < gap <= data - setup
+        assert "DAISY REPORT: progress " in result.stdout
         print(result.stdout.splitlines()[-1])
 
 

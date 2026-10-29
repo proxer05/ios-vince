@@ -1166,3 +1166,39 @@ the five contact faults. A new regression uses exact raw device records and
 retains rejection of the startup sentinel and event 3. All six analyzer tests
 pass; analysis of this device capture correctly exits 1. The device is left
 in TWRP after collection.
+
+### 0192 per-byte timing and IRQ observations
+
+`0192-daisy-report-timing-irq.patch` adds `daisytouch_trace=1` to the existing
+opt-in report capture. It takes effect only inside `daisytouch_reports=1`
+after the established GPIO/RPM/rail/identity gates. The trace hint by itself
+does not enable capture, power votes, or touch. All options remain default-off.
+
+The same combined 63-byte transaction now optionally measures:
+
+- `us`: total transfer time through STOP and released-bus cleanup, before
+  publishing the frame, formatting/printing it, or sleeping.
+- `phase`: elapsed microseconds after the read-address ACK, header (byte 3),
+  first record (byte 9), second record (byte 15), and all data (byte 63).
+- `gap`: largest interval between completed data bytes, including the first
+  byte measured from the read-address ACK.
+- `low`: 64-bit IRQ-low sample mask; bit 0 is before START and bit N follows
+  completed byte N (1–63). The existing `irqB/A` remains before/after transfer.
+
+The measurements include scheduling and observation overhead. IRQ samples can
+miss pulses; mask changes are not a hardware interrupt/edge count. Bus delays,
+unconditional polling, reset timing and power sequence remain as in 0191 to
+make this a timing/IRQ observation test rather than an unmeasured timing fix.
+The first read's startup pattern and all malformed frame bytes remain visible.
+
+Trace-enabled captures also print progress every roughly ten seconds and at
+completion: cumulative reads/successes/errors/raw lines, min/mean/max transfer
+microseconds and maximum byte gap across **all attempts**, including unchanged
+frames omitted from raw logging. The five-minute/4,096-line/eight-consecutive-
+error bounds remain in effect. No touch HID events are generated.
+
+Actual-source host tests exercise IRQ bits 0–63, ordered phase timestamps,
+a simulated 12,345 us scheduling pause localized to the second record, and
+every SCL-high timeout with tracing both on and off. They retain complete-read/
+STOP publication, error cleanup, power/identity/default-off gating, and bounded
+capture checks. Hardware timing evidence is pending a new CI image and capture.

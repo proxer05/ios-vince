@@ -3,6 +3,7 @@ static void
 test_gpio_reports(void)
 {
 	uint8_t buf[65];
+	struct fts_gpio_trace timing, base;
 	unsigned stage, received, clocks = 0;
 	for (unsigned count = 1; count <= FTS_REPORT_LEN; count++) {
 		fresh(); wire_init();
@@ -15,18 +16,34 @@ test_gpio_reports(void)
 		assert(wire.master_acks == count - 1 && wire.master_nacks == 1);
 		assert(!memcmp(buf + 1, wire.report, count) && buf[0] == 0xee && buf[count + 1] == 0xee);
 		assert(wire.sda && wire.scl && !wire.active && !qup_accesses);
+		assert(!wire.irq_reads); /* tracing adds no IRQ samples when disabled */
 		clocks = wire.highs - 1;
 	}
+	/* Byte-indexed IRQ observations, monotonic phases, STOP included in total. */
+	fresh(); wire_init(); wire.irq_pattern = true;
+	assert(fts_gpio_read_transfer(0, buf, 63, &stage, &received, &base) == 0);
+	assert(base.low == 0xaaaaaaaaaaaaaaaaull && wire.irq_reads == 64);
+	assert(base.setup < base.header && base.header < base.point0 && base.point0 < base.point1);
+	assert(base.point1 < base.data && base.data < base.total && base.gap > 0);
+	assert(wire.master_acks == 62 && wire.master_nacks == 1 && wire.starts == 2 && wire.stops == 1);
+	/* Simulated scheduling pause within the second record is localized correctly. */
+	fresh(); wire_init(); wire.pause_byte = 10; wire.pause_us = 12345;
+	assert(fts_gpio_read_transfer(0, buf, 63, &stage, &received, &timing) == 0);
+	assert(timing.setup == base.setup && timing.header == base.header && timing.point0 == base.point0);
+	assert(timing.point1 == base.point1 + 12345 && timing.data == base.data + 12345);
+	assert(timing.total == base.total + 12345 && timing.gap == base.gap + 12345);
+	assert(timing.low == ~0ull && !memcmp(buf, wire.report, 63));
 	/* Every SCL high phase can time out, including final byte NACK and STOP. */
-	for (unsigned fault = 1; fault <= clocks; fault++) {
+	for (unsigned fault = 1; fault <= clocks * 2; fault++) {
 		fresh(); wire_init();
-		wire.fail_clock = fault;
+		wire.fail_clock = (fault - 1) % clocks + 1;
 		wire.stretch = FTS_GPIO_STRETCH_US + 1;
 		memset(buf, 0xee, sizeof(buf));
-		assert(fts_gpio_read_block(0, buf + 1, 63, &stage, &received) == -4);
+		assert(fts_gpio_read_transfer(0, buf + 1, 63, &stage, &received, fault > clocks ? &timing : NULL) == -4);
 		for (unsigned i = 0; i < sizeof(buf); i++) { assert(buf[i] == 0xee); }
 		assert(wire.sda && wire.scl && received <= 63);
-		if (fault == clocks) { assert(stage == 7 && received == 63); }
+		if (!(fault % clocks)) { assert(stage == 7 && received == 63); }
+		if (fault > clocks) { assert(timing.total > 0 && timing.total >= timing.data); }
 	}
 	for (unsigned byte = 1; byte <= 3; byte++) {
 		fresh(); wire_init(); wire.nack_byte = byte;
@@ -47,7 +64,7 @@ test_gpio_reports(void)
 	/* Capture requires GPIO mode, power success, and successful identity/FW reads. */
 	for (unsigned fault = 0; fault < 6; fault++) {
 		fresh(); wire_init();
-		boot_daisy = boot_gpio = boot_power = boot_reports = 1;
+		boot_trace = boot_daisy = boot_gpio = boot_power = boot_reports = 1;
 		power_ready = true;
 		if (fault == 0) { boot_gpio = 0; }
 		if (fault == 1) { boot_power = 0; }
@@ -61,12 +78,18 @@ test_gpio_reports(void)
 	}
 	/* Full time-bounded run, including 30/60-second rail and identity checks. */
 	fresh(); wire_init();
-	boot_daisy = boot_gpio = boot_power = boot_reports = boot_probe = 1;
+	boot_trace = boot_daisy = boot_gpio = boot_power = boot_reports = boot_probe = 1;
 	power_ready = true; capture_step_ms = 10000;
 	vince_input_start(); started_fn(NULL, 0);
 	assert(wire.report_reads == 30 && capture_sleeps == 30 && power_calls == 1);
 	assert(wire.master_acks == 62 * 30 && wire.master_nacks == 30 + 12);
 	assert(!qup_maps && !qup_accesses && wire.sda && wire.scl);
+	assert(wire.irq_reads >= 64 * 30);
+	/* A trace hint alone does not switch identity-only mode into capture. */
+	fresh(); wire_init();
+	boot_trace = boot_daisy = boot_gpio = boot_power = 1; power_ready = true;
+	vince_input_start(); started_fn(NULL, 0);
+	assert(!wire.report_reads && wire.irq_reads == 1);
 	/* A continuously changing stream hits the raw-frame cap before the time cap. */
 	fresh(); wire_init();
 	capture_step_ms = 1; capture_change = true;
