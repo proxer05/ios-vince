@@ -1039,8 +1039,24 @@ These establish software behavior; hardware report coherence remains pending.
 Hardware sequence: boot the 0191 image with the 0190 power-test arguments plus
 `daisytouch_reports=1`, retain `daisylog=1`, leave the screen untouched briefly,
 then perform separated taps, slow swipes across the screen, and two-finger
-movement with full releases. Return to fastboot after at least 90 seconds,
-temporarily boot TWRP, and extract to `artifacts/console-reports-0191.log`.
+movement with full releases. Return to fastboot after five minutes so the
+capture's final counters are persisted. Temporarily boot TWRP and extract to
+`artifacts/console-reports-0191.log`.
 Host inspection must check complete frames, normal mode, valid counts/events/
 unique slot IDs/coordinates, agreement between active records and header count,
 and observed idle → contact → motion → release transitions before HID work.
+
+`python3 tools/analyze_daisy_reports.py artifacts/console-reports-0191.log`
+checks those fields against the pinned vendor layout, requires the logged
+power/identity gates, monotonic sample metadata, and consistent completion
+counters. It summarizes observed slots, coordinate ranges, events, motion,
+multitouch and full releases. Exit 0 requires complete, error-free evidence
+covering all those states; exit 1 denotes malformed/failed capture evidence,
+and exit 2 denotes missing coverage or completion. Unchanged frames are
+suppressed in the kernel, so gaps in sequence numbers are expected. UP records
+can coexist with active records; the header count excludes UP. Five host tests
+cover recorded-format fixtures, corruptions, transport failures and incomplete
+captures (`python3 tools/tests/test_daisy_report_analysis.py`).
+
+0191 kernel CI: `40952756300` at `38f315159658247a481e90f1973c75e0581f0579`,
+with `MACHINE_CONFIG=VINCE` and linked report-capture marker checks.
