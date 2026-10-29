@@ -1223,3 +1223,36 @@ replaying 0191 still rejects the same 84 startup and five event-3 samples,
 with the original 154 accepted-to-accepted motion transitions tightened to
 152 that do not cross malformed samples. No invalid report is reclassified
 as a valid contact.
+
+### 0192 timing/IRQ image built and temporarily booted
+
+CI `40957268230` at `b419648a81a236046e0ce2ad51fed4b4e46bbcb8` passed the
+VINCE build and linked diagnostic marker checks. Downloaded the kernel to
+`artifacts/kernel-0192/` and verified `SHA256SUMS`; the CI log is
+`artifacts/daisy-touch-dev/ci-0192-success.log`.
+
+```sh
+VINCE_NO_FBCON=0 \
+DTB="$PWD/artifacts/daisy-dtb.bin" \
+PAYLOAD_CMDLINE='debug=0xc serial=3 cpus=1 keepsyms=1 io=0x3f -noprogress wdt=-1 wdt_test=no_user_checkin rd=mmcroot0 mmcrw=1 rootrw=1 unentitled_ios_sim_launch=1 launchd_unsecure_cache=1 ignition_level=1 vincefix=bluetool vincetouch=0 vincekeys=1 daisytouch=1 daisytouch_probe=1 daisytouch_gpio=1 daisytouch_power=1 startup_debug=0 -disable_kprintf daisylog=1 daisytouch_reports=1 daisytouch_trace=1' \
+tools/build_daisy.sh artifacts/kernel-0192/kernel.development.vince artifacts/daisy-touch-trace-0192
+fastboot -s 6790a29e0305 boot artifacts/daisy-touch-trace-0192/daisy-boot.img
+```
+
+- Kernel SHA-256: `302e55322883a26969c7f0db7cea6e5fc67c12fbeadbc381ae6c0c8e935ed2fd`.
+- Image SHA-256: `a688ae1684d8c1ecc8e30661b22b58858e4f9879db67d3abcfd258158f284b18`.
+- Image size: 17,928,192 bytes.
+- Build log: `artifacts/daisy-touch-dev/build-image-trace-0192.log`.
+
+Verified the Android header/hash, appended Daisy DTBs, empty `second`, full
+payload/ADT, RAM bounds and every kernel segment, exact command line, and
+linked report/trace/progress/power/identity/logger markers. Confirmed
+`product: daisy`; temporary boot on serial `6790a29e0305` succeeded in 0.538 s.
+
+**Hardware trace result pending.** The requested interaction is initial idle,
+one finger held steady for ten seconds, release, two fingers held steady for
+ten seconds, then slow motion and full releases. This adds steady-contact
+evidence to the previous moving-contact capture. Allow five minutes total
+runtime before returning to fastboot. Temporarily boot TWRP, extract to
+`artifacts/console-trace-0192.log`, and analyze with
+`python3 tools/analyze_daisy_reports.py artifacts/console-trace-0192.log`.

@@ -336,3 +336,16 @@ for that interval and does not show logger failure. No logger-stop/loss markers
 appear. Five reserved-event contact records still block clean validation;
 see [the report result](TOUCHSCREEN-PLAN.md#0191-result-live-contacts-captured-coherence-unresolved).
 TWRP was booted temporarily and the phone remains there after extraction.
+
+### 0192 timing/IRQ diagnostic boot
+
+CI `40957268230` at `b419648` passed compilation and linked diagnostic checks.
+The checksum-verified kernel in `artifacts/kernel-0192/` was assembled into
+`artifacts/daisy-touch-trace-0192/daisy-boot.img` (17,928,192 bytes;
+SHA-256 `a688ae1684d8c1ecc8e30661b22b58858e4f9879db67d3abcfd258158f284b18`).
+It adds `daisytouch_trace=1` to the 0191 report/power/logging arguments.
+Image structure, payload/ADT, RAM bounds, segments and linked markers passed
+verification; temporary fastboot boot succeeded on `6790a29e0305` in 0.538 s.
+See [the timing/IRQ test](TOUCHSCREEN-PLAN.md#0192-timingirq-image-built-and-temporarily-booted)
+for the build command and steady/moving-contact capture instructions. The next
+recovery output is `artifacts/console-trace-0192.log`; hardware results are pending.
