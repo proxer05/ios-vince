@@ -12,14 +12,19 @@ presses to get past the lockscreen with touch disabled. The no-touch homescreen
 milestone is complete. See [boot diagnostics](docs/BOOT-DEBUG.md) for the
 known-working image and build command.
 
+**Touch identification:** TWRP confirmed **FocalTech FT5446** (`0x5422`),
+Ofilm touch panel + CSOT LCD, firmware `0x0c` on this handset. See the
+[touchscreen bring-up plan](docs/TOUCHSCREEN-PLAN.md).
+
 ## Target Hardware
 - **SoC:** Qualcomm Snapdragon 625 (MSM8953), 8x ARM Cortex-A53 @ 2.0 GHz
 - **Display:** HX8399C FHD+ video-mode DSI panel, 1080x2280, 24-bit RGB888, stride 3240 bytes, continuous-splash at `0x90001000`
 - **Interrupt Controller:** ARM GICv2 MMIO (Distributor: `0x0b000000`, CPU Interface: `0x0b002000`)
 - **Timer:** ARM Generic Virtual Timer (PPI 20 / INTID 20)
 - **Storage:** Qualcomm SDHCI eMMC 5.1 (`0x07824900`), GPT partition named `userdata`
-- **Touch (not enabled yet):** two daisy variants: Goodix GT9xx on I2C-3 at `0x5d`, or
-  FocalTech FT5446/FT5435 on I2C-3 at `0x38`; both use reset GPIO 64 and IRQ GPIO 65
+- **Touch (identified, not enabled in XNU yet):** FocalTech FT5446 on I2C-3 at
+  `0x38`, reset GPIO 64, IRQ GPIO 65; 10 slots, 1080x2280 coordinate range.
+  Other daisy variants can use Goodix GT9xx at `0x5d` or FocalTech FT5435.
 - **RAM:** tested 3 GB variant; XNU uses the upper-memory subset starting at
   `0xa0000000`, size `0x57f00000` (with a separate 1 MiB panic-log reservation)
 
@@ -28,8 +33,8 @@ known-working image and build command.
 - The XNU framebuffer driver still receives `vWidth/vHeight/vRowBytes` through the boot
   arguments, so the 24-bpp 1080x2280 panel path is otherwise unchanged.
 - Touch is optional at this stage and is not on the boot path. The vince Synaptics RMI4
-  driver is compiled but disabled by default in this branch (`vincetouch=0`); daisy uses a
-  Goodix GT9xx or FocalTech FT5446/FT5435, so the vince probe would only find no device.
+  driver is compiled but disabled by default in this branch (`vincetouch=0`);
+  this daisy handset needs an FT5446 protocol handler at address `0x38`.
 
 The machine config is intentionally still named `VINCE` for the first boot. The MSM8953
 GICv2/timer/eMMC/PMIC/PSCI code is identical on daisy; renaming the board config can wait
@@ -54,8 +59,7 @@ The iOS root is installed into the `userdata` GPT partition, so this erases Andr
 data. Keep a backup.
 
 ## Not Yet Done
-- daisy touch driver (Goodix GT9xx at `0x5d` or FocalTech FT5446/FT5435 at `0x38`,
-  I2C-3, reset GPIO 64, IRQ GPIO 65)
+- daisy FT5446 touch driver: see the [staged plan](docs/TOUCHSCREEN-PLAN.md)
 - daisy-specific GPU zap/secure-memory address verification (same Adreno 506; CPU
   rendering is enough for first boot)
 - daisy WLAN/BT calibration and MAC handling
