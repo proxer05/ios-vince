@@ -427,3 +427,24 @@ markers passed verification. Temporary fastboot boot succeeded on
 See [the HID build/boot](TOUCHSCREEN-PLAN.md#0194-hid-image-built-and-temporarily-booted)
 for the exact command. User confirmation of icon taps, swipes and coordinate
 alignment is pending. Next recovery output: `artifacts/console-hid-0194.log`.
+
+### 0194 single-core HID log and eight-core comparison boot
+
+The user reported severe lag. Saved `artifacts/console-hid-0194.log`
+(325,735 bytes, 3,743 lines; SHA-256
+`fe3520b2a8ea0983df7246a368a6e05361225e3017d7ebcbe0cbde62694310c3`).
+It confirms one CPU at 1401 MHz, 60 down/up pairs reaching SweetHID, and
+continuous filtered HID through 390.458 seconds with no I²C errors or stale
+releases. SpringBoard interaction remains unconfirmed.
+
+Assembled `artifacts/daisy-touch-hid-0194-smp/daisy-boot.img` using the same
+kernel with `DAISY_ALL_CPUS=1`, `cpus=8`, `daisylog=0` and no framebuffer
+console. Daisy's local shim does not run the inherited CPU1 USB monitor, so
+the optional ADT setting exposes all eight cores. The verified image is
+17,944,576 bytes; SHA-256
+`a6678e5576c3376c4424704c10d65aab7fbe13c7aca7546fe49cea12a9c75fc1`.
+Temporary fastboot boot succeeded in 0.541 s. See
+[the SMP comparison](TOUCHSCREEN-PLAN.md#0194-hid-delivery-confirmed-eight-core-lag-comparison)
+for the full command and evidence. Runtime CPU count and responsiveness are
+pending. Persistent logging is off; the previous on-device log is not evidence
+from this new SMP boot.

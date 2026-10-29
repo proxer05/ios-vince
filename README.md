@@ -20,7 +20,9 @@ identity reads. The opt-in 0193 counter delay cuts median report reads from
 31.3 to 8.8 ms and captures 182 structurally valid two-contact samples, but
 three reserved-event/count inconsistencies remain. At the user's request,
 0194 adds experimental HID delivery for valid frames, dropping malformed frames
-and releasing stale contacts. SpringBoard hardware validation is pending. See the
+and releasing stale contacts. The first hardware log confirms 60 down/up pairs
+reaching SweetHID; SpringBoard usability is still being tested. A new test image
+exposes all eight CPU cores with persistent logging off to investigate UI lag. See the
 [touchscreen bring-up plan](docs/TOUCHSCREEN-PLAN.md).
 
 ## Target Hardware
@@ -46,6 +48,11 @@ and releasing stale contacts. SpringBoard hardware validation is pending. See th
 The machine config is intentionally still named `VINCE` for the first boot. The MSM8953
 GICv2/timer/eMMC/PMIC/PSCI code is identical on daisy; renaming the board config can wait
 until the first boot is confirmed.
+
+For the experimental eight-core image, set `DAISY_ALL_CPUS=1` while assembling
+the ADT/image and use `cpus=8 daisylog=0` in `PAYLOAD_CMDLINE`. The default ADT
+retains the inherited seven-node layout; existing diagnostic images additionally
+use `cpus=1`. See the [SMP touch test](docs/TOUCHSCREEN-PLAN.md#0194-hid-delivery-confirmed-eight-core-lag-comparison).
 
 ## First Boot
 Use the existing vince XNU build/payload/root-image tooling, with the daisy ADT and shim:

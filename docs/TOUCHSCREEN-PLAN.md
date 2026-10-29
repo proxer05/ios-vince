@@ -10,7 +10,10 @@ and median report reads fall from 31.3 to 8.8 ms. Its contact trace contains
 reserved events and one count inconsistency still block report coherence.
 At the user's request, [0194](#0194-opt-in-filtered-hid-for-springboard) adds
 experimental HID delivery for valid frames, dropping malformed frames. It is
-disabled by default; SpringBoard hardware validation is pending. The
+disabled by default. Hardware logs now confirm 60 down/up pairs through
+SweetHID; SpringBoard usability/alignment is pending. An
+[eight-core test](#0194-hid-delivery-confirmed-eight-core-lag-comparison) has been
+temporarily booted after the user reported severe single-core UI lag. The
 [0193 result](#0193-hardware-result-faster-reads-coherence-still-blocked) remains
 the evidence for the outstanding report faults.
 
@@ -1578,3 +1581,65 @@ to swipe up to unlock, tap icons, swipe pages and check touch alignment.
 **SpringBoard interaction result pending.** HID has no five-minute time limit.
 After the user finishes and returns to fastboot, extract the persistent log
 to `artifacts/console-hid-0194.log` before another logging-enabled XNU boot.
+
+### 0194 HID delivery confirmed; eight-core lag comparison
+
+The user reported severe lag and asked whether all cores were active. The
+first HID image explicitly used `cpus=1` for the persistent logger. After the
+phone returned to fastboot, temporarily booted TWRP (1.780 s) and extracted
+`artifacts/console-hid-0194.log`: **325,735 bytes**, 3,743 lines, SHA-256
+`fe3520b2a8ea0983df7246a368a6e05361225e3017d7ebcbe0cbde62694310c3`.
+
+The log confirms **one CPU at 1401 MHz**, successful power/identity gates,
+and **60 touch-down plus 60 touch-up events** from SweetHID across slots 0/1,
+including bottom/top-edge gestures. These prove kernel HID delivery; they do
+not establish successful SpringBoard actions or coordinate alignment. The
+last counters are:
+
+```text
+DAISY HID: ms390458 reads12735 valid5343 dropped7392 errors0 active0 stale0
+```
+
+No I²C errors, stale-contact releases, panic or logger-loss/stop markers are
+reported. Initial count-15 data accounts for all reads through the 220-second
+progress record; valid data and HID transitions appear before 230 seconds.
+Reserved-event drops also occur. HID continues past five minutes, with a
+released contact state at the final saved sample.
+
+The single-core configuration makes the GPIO busy-wait loop, synchronous
+console-file writes and UI rendering compete on the same core. Their relative
+contribution to the reported lag has not been measured. The comparison image
+removes both the single-core cap and the persistent logger.
+
+The inherited ADT excluded CPU1 for Vince's USB monitor. Source inspection of
+Daisy's local `shim/shim.c` / `shim/start.S` confirms this shim never issues
+PSCI CPU_ON or starts that monitor. `DAISY_ALL_CPUS=1` now optionally includes
+CPU1, exposing all eight physical cores (MPIDRs `0..3`, `0x100..0x103`) to the
+existing VINCE PSCI/SGI startup path. The default seven-node ADT is preserved.
+The current kernel supports eight CPUs; this is an image/ADT configuration
+change using the same CI-verified 0194 kernel.
+
+```sh
+DAISY_ALL_CPUS=1 VINCE_NO_FBCON=1 \
+DTB="$PWD/artifacts/daisy-dtb.bin" \
+PAYLOAD_CMDLINE='debug=0xc serial=3 cpus=8 keepsyms=1 io=0x3f -noprogress wdt=-1 wdt_test=no_user_checkin rd=mmcroot0 mmcrw=1 rootrw=1 unentitled_ios_sim_launch=1 launchd_unsecure_cache=1 ignition_level=1 vincefix=bluetool vincetouch=0 vincekeys=1 daisytouch=1 daisytouch_gpio=1 daisytouch_power=1 startup_debug=0 -disable_kprintf daisylog=0 daisytouch_busywait=1 daisytouch_hid=1' \
+tools/build_daisy.sh artifacts/kernel-0194/kernel.development.vince artifacts/daisy-touch-hid-0194-smp
+fastboot -s 6790a29e0305 boot artifacts/daisy-touch-hid-0194-smp/daisy-boot.img
+```
+
+- Image SHA-256: `a6678e5576c3376c4424704c10d65aab7fbe13c7aca7546fe49cea12a9c75fc1`.
+- Image size: 17,944,576 bytes.
+- Kernel SHA-256: `010d54d08824cef3e5d28ae40ba553b36ae73469d319a26c1df4f024e8d71212`.
+- Build log: `artifacts/daisy-touch-dev/build-image-hid-0194-smp.log`.
+
+Verified Android header/hash, appended DTBs/empty `second`, payload/kernel
+segments and RAM bounds, exact command line, eight CPU nodes/MPIDRs, unique
+phandles and the remaining ADT properties against the no-fbcon baseline.
+Confirmed `product: daisy`; temporary boot succeeded in **0.541 s**.
+**Eight-core runtime bring-up and UI responsiveness await user feedback.**
+The image requests eight cores; a successful fastboot handoff does not prove
+all secondary CPUs reached XNU's running state.
+
+`daisylog=0` avoids the logger's single-core-only snapshot path. The existing
+on-device console file remains from the previous single-core test and must
+not be attributed to this SMP run. Filtered touch remains enabled continuously.

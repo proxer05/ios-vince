@@ -221,10 +221,13 @@ def build_vince_adt(seed=None):
         ('opposed-power-vol-buttons', u32(1)),
     ])
 
-    # CPUs: Cortex-A53 x8 in two clusters (MPIDR 0x0-0x3, 0x100-0x103). CPU1 is left out: the shim's USB monitor
-    # runs there for the whole session. cpu0 running, the rest started by SweetCPU through PSCI CPU_ON.
+    # Cortex-A53 x8, MPIDR 0x0-0x3 / 0x100-0x103. Preserve the inherited
+    # seven-node default for existing images. Daisy's local shim does not run
+    # Vince's CPU1 USB monitor: DAISY_ALL_CPUS=1 makes CPU1 available to XNU too.
+    # CPU0 is running; SweetCPU starts the other nodes through PSCI CPU_ON.
     cpu_nodes = []
-    for core in (0, 2, 3, 4, 5, 6, 7):
+    cores = range(8) if os.environ.get('DAISY_ALL_CPUS') == '1' else (0, 2, 3, 4, 5, 6, 7)
+    for core in cores:
         c = node(f'cpu{core}', [
             ph(),
             ('device_type', cstr('cpu')),

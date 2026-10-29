@@ -9,6 +9,8 @@
 #
 # The iOS root image is not packed here: XNU roots from the GPT "userdata"
 # partition via rd=mmcroot0.
+# DAISY_ALL_CPUS=1 includes all eight cores in the ADT (the local Daisy shim
+# has no CPU1 USB monitor). Use cpus=8 and omit daisylog=1 for the SMP test.
 set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
