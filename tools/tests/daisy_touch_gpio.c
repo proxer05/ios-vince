@@ -1,18 +1,21 @@
 /* Edge-driven open-drain FT slave for the actual patched GPIO transport. */
 static struct {
 	bool enabled, sda, scl, slave, clock, active, address, read, ack_clock;
-	bool stuck_sda, stuck_scl, absent;
+	bool stuck_sda, stuck_scl, absent, master_ack, bad_id;
 	unsigned state, bits, value, reg, starts, stops, nbytes, master_nacks, master_acks;
 	unsigned highs, fail_clock, stretch, remaining, nack_byte;
 	uint8_t bytes[128];
+	uint8_t report[FTS_REPORT_LEN];
+	unsigned report_reads;
 } wire;
 enum { W_RX, W_ACK, W_TX, W_NACK, W_IDLE };
 
 static uint8_t
 wire_register(unsigned reg)
 {
+	if (reg < sizeof(wire.report)) { return wire.report[reg]; }
 	switch (reg) {
-	case 0xa3: return 0x54;
+	case 0xa3: return wire.bad_id ? 0 : 0x54;
 	case 0x9f: return 0x22;
 	case 0xa6: return 0x0c;
 	case 0xa8: return 0x51;
@@ -35,6 +38,7 @@ wire_clock(void)
 			break;
 		case W_ACK: wire.ack_clock = true; break;
 		case W_NACK:
+			wire.master_ack = !wire.sda;
 			if (wire.sda) { wire.master_nacks++; }
 			else { wire.master_acks++; }
 			break;
@@ -43,10 +47,11 @@ wire_clock(void)
 		switch (wire.state) {
 		case W_RX:
 			if (wire.bits != 8) { break; }
-			assert(wire.nbytes < sizeof(wire.bytes));
-			wire.bytes[wire.nbytes++] = wire.value;
+			if (wire.nbytes < sizeof(wire.bytes)) { wire.bytes[wire.nbytes] = wire.value; }
+			wire.nbytes++;
 			if (wire.address) {
 				wire.read = wire.value & 1;
+				if (wire.read && wire.reg == 0) { wire.report_reads++; }
 				wire.address = false;
 			} else {
 				wire.reg = wire.value;
@@ -69,7 +74,14 @@ wire_clock(void)
 				wire.slave = (wire_register(wire.reg) >> (7 - wire.bits)) & 1;
 			}
 			break;
-		case W_NACK: wire.state = W_IDLE; break;
+		case W_NACK:
+			if (wire.master_ack) {
+				wire.reg++;
+				wire.bits = 0;
+				wire.state = W_TX;
+				wire.slave = (wire_register(wire.reg) & 0x80) != 0;
+			} else { wire.state = W_IDLE; }
+			break;
 		}
 	}
 }
@@ -122,4 +134,6 @@ wire_init(void)
 {
 	memset(&wire, 0, sizeof(wire));
 	wire.enabled = wire.sda = wire.scl = wire.slave = wire.clock = true;
+	memset(wire.report, 0xff, sizeof(wire.report));
+	memset(wire.report, 0, 3); /* work mode, no gesture, no contacts */
 }

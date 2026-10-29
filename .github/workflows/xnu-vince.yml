@@ -88,6 +88,8 @@ jobs:
               b'daisytouch_power', b'DAISY RPM: power result', b'DAISY TOUCH: RPM r%d rails-ready',
               b'daisytouch_rpm_diag', b'DAISY RPM: layout result', b'DAISY TOUCH: layout-only',
               b'DAISY RPM: mapped item', b'DAISY RPM: snapshot half',
+              b'daisytouch_reports', b'DAISY REPORT: begin reg00 bytes63',
+              b'DAISY REPORT: seq%u', b'DAISY REPORT: done',
               b'daisylog', b'DAISY EMMCLOG: saving console', b'# DAISY EMMCLOG v1',
               b'/private/var/log/daisy-console.log',
               b'VinceGPU: service started and registered', b'VinceGPUUserClient',

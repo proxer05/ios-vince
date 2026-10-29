@@ -1006,3 +1006,41 @@ collection. Next add an opt-in coherent register-0 **63-byte report** capture
 using the validated power/identity sequence, retaining ten-slot/1080×2280
 geometry and the existing HID transform. Confirm complete idle and moving
 contact frames before enabling contact decoding or touch event delivery.
+
+### 0191 opt-in GPIO report capture
+
+`0191-daisy-gpio-report-capture.patch` adds `daisytouch_reports=1`. It requires
+`daisytouch=1 daisytouch_gpio=1 daisytouch_power=1`, successful RPM/rail gating,
+and FT5446 identity plus firmware/vendor reads. The layout-only selector still
+supersedes power and report capture. Every selector remains disabled by default.
+
+Each frame is one combined register-0, repeated-START **63-byte** read, matching
+the pinned vendor driver's `fts_read_touchdata()` transaction: ACK the first
+62 bytes, NACK the last, then STOP. A temporary buffer is published only after
+the entire read and STOP succeed. The one-byte identity helper uses this same
+transport. Reset timing, external I²C pulls, ten-slot/1080×2280 format, and
+the existing HID transform are preserved; the capture sends no touch events.
+
+After successful identity, the worker polls with a 20 ms sleep for at most
+five minutes. It records complete changed frames and one idle sample per
+second, up to 4,096 raw frames; eight consecutive I²C failures stop it early.
+Each raw line includes sequence, elapsed milliseconds, IRQ before/after,
+received length, and all 126 hex digits. The final summary reports successful
+reads, errors, raw lines, and stop reason. `daisytouch_probe=1` retains rail
+and identity checks near 30/60 seconds; identity loss ends capture.
+
+Actual-source host tests (`python3 tools/tests/test_daisy_touch_probe.py`, also
+with `CC=clang`) pass ASan/UBSan: lengths 1–63, exact START/address/register and
+ACK/NACK/STOP behavior, timeouts at every SCL-high phase, bounded stretching,
+address/register NACKs, atomic output, invalid lengths, GPIO/power/identity
+gates, time/frame/error limits, repeated checks, and absence of touch HID.
+These establish software behavior; hardware report coherence remains pending.
+
+Hardware sequence: boot the 0191 image with the 0190 power-test arguments plus
+`daisytouch_reports=1`, retain `daisylog=1`, leave the screen untouched briefly,
+then perform separated taps, slow swipes across the screen, and two-finger
+movement with full releases. Return to fastboot after at least 90 seconds,
+temporarily boot TWRP, and extract to `artifacts/console-reports-0191.log`.
+Host inspection must check complete frames, normal mode, valid counts/events/
+unique slot IDs/coordinates, agreement between active records and header count,
+and observed idle → contact → motion → release transitions before HID work.

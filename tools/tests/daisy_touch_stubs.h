@@ -11,12 +11,17 @@ typedef int thread_t;
 typedef int wait_result_t;
 #define KERN_SUCCESS 0
 #define THREAD_CONTINUE_NULL NULL
+#define NSEC_PER_MSEC 1000000u
+static uint64_t mock_time_ns;
+static uint64_t mach_absolute_time(void) { return mock_time_ns; }
+static void absolutetime_to_nanoseconds(uint64_t time, uint64_t *ns) { *ns = time; }
 static uint32_t mock_rd(vm_offset_t, uint32_t);
 static void mock_wr(vm_offset_t, uint32_t, uint32_t);
 static void mock_sleep(unsigned);
-static void delay(unsigned us) { (void)us; }
+static void delay(unsigned us) { mock_time_ns += (uint64_t)us * 1000; }
 static thread_t current_thread(void) { return 1; }
 static void thread_block(void *cont) { (void)cont; }
 static void thread_deallocate(thread_t t) { (void)t; }
 static int kernel_thread_start(void (*fn)(void *, wait_result_t), void *, thread_t *);
 static bool PE_parse_boot_argn(const char *, void *, int);
+static void test_gpio_reports(void);

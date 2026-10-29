@@ -1,0 +1,227 @@
+diff --git a/bsd/dev/vince_input.c b/bsd/dev/vince_input.c
+index 781988c..f1a7b49 100644
+--- a/bsd/dev/vince_input.c
++++ b/bsd/dev/vince_input.c
+@@ -32,6 +32,8 @@
+  * it only takes effect with daisytouch=1 daisytouch_gpio=1, and defaults off.
+  * daisytouch_rpm_diag=1 instead inspects that layout read-only, holds reset,
+  * and supersedes power/identity probes. It needs daisytouch=1 daisytouch_gpio=1.
++ * daisytouch_reports=1 captures coherent 63-byte GPIO reports for up to five
++ * minutes after successful RPM power and identity. Raw logging only, no HID.
+  */
+ #if defined(ARM64_BOARD_CONFIG_VINCE)
+ #include <sys/param.h>
+@@ -127,7 +129,7 @@ static bool input_started;
+ static int keys_chan, touch_chan;
+ static int daisy_touch, daisy_probe;
+ static int daisy_diag, daisy_gpio, daisy_power;
+-static int daisy_rpm_diag;
++static int daisy_rpm_diag, daisy_reports;
+ static uint32_t qup_last_bus_error, qup_last_error;
+ 
+ static uint32_t
+@@ -784,7 +786,7 @@ fts_gpio_put(uint8_t byte)
+ }
+ 
+ static int
+-fts_gpio_get(uint8_t *byte)
++fts_gpio_get(uint8_t *byte, bool ack)
+ {
+ 	uint8_t v = 0;
+ 	fts_gpio_line(GPIO_SDA, true);
+@@ -796,9 +798,12 @@ fts_gpio_get(uint8_t *byte)
+ 		v = (uint8_t)((v << 1) | fts_gpio_level(GPIO_SDA));
+ 		fts_gpio_scl_low();
+ 	}
+-	/* Identity reads are one byte: the master NACKs the final byte. */
++	/* ACK intermediate bytes, NACK the final byte of the single transaction. */
++	fts_gpio_line(GPIO_SDA, !ack);
++	delay(FTS_GPIO_HALF_US);
+ 	int r = fts_gpio_scl_high();
+ 	fts_gpio_scl_low();
++	fts_gpio_line(GPIO_SDA, true);
+ 	if (!r) {
+ 		*byte = v;
+ 	}
+@@ -807,27 +812,42 @@ fts_gpio_get(uint8_t *byte)
+ 
+ /* Stage: 1 START, 2 addr-W, 3 register, 4 RESTART, 5 addr-R, 6 data, 7 STOP. */
+ static int
+-fts_gpio_read(uint8_t reg, uint8_t *value, unsigned *stage)
++fts_gpio_read_block(uint8_t reg, uint8_t *value, unsigned count, unsigned *stage, unsigned *received)
+ {
+-	uint8_t v = 0;
++	/* Publish only after every byte and STOP succeeds; never expose a partial frame. */
++	uint8_t v[FTS_REPORT_LEN];
++	if (stage) { *stage = 0; }
++	if (received) { *received = 0; }
++	if (!value || !stage || !received || !count || count > sizeof(v)) { return -1; }
+ 	*stage = 1;
+ 	int r = fts_gpio_start();
+ 	if (!r) { *stage = 2; r = fts_gpio_put(FTS_ADDR << 1); }
+ 	if (!r) { *stage = 3; r = fts_gpio_put(reg); }
+ 	if (!r) { *stage = 4; r = fts_gpio_start(); }
+ 	if (!r) { *stage = 5; r = fts_gpio_put((FTS_ADDR << 1) | 1u); }
+-	if (!r) { *stage = 6; r = fts_gpio_get(&v); }
++	for (unsigned i = 0; i < count && !r; i++) {
++		*stage = 6;
++		r = fts_gpio_get(&v[i], i + 1 < count);
++		if (!r) { *received = i + 1; }
++	}
+ 	int stop = fts_gpio_stop();
+ 	if (!r) { *stage = 7; r = stop; }
+ 	/* No low output survives any error, even an unsuccessful STOP. */
+ 	fts_gpio_line(GPIO_SDA, true);
+ 	fts_gpio_line(GPIO_SCL, true);
+ 	if (!r) {
+-		*value = v;
++		memcpy(value, v, count);
+ 	}
+ 	return r;
+ }
+ 
++static int
++fts_gpio_read(uint8_t reg, uint8_t *value, unsigned *stage)
++{
++	unsigned received;
++	return fts_gpio_read_block(reg, value, 1, stage, &received);
++}
++
+ static int
+ fts_gpio_recover(void)
+ {
+@@ -843,7 +863,7 @@ fts_gpio_recover(void)
+ 	return r ? r : stop;
+ }
+ 
+-static void
++static bool
+ fts_gpio_summary(void)
+ {
+ 	uint8_t hi = 0, lo = 0, fw = 0, vendor = 0, reg = 0xa3;
+@@ -871,11 +891,80 @@ fts_gpio_summary(void)
+ 	printf("DAISY TOUCH: GPIO id r%d reg%02x stage%u id%02x%02x tries%u\n",
+ 	    r, reg, stage, hi, lo, attempts);
+ 	if (r || hi != 0x54 || lo != 0x22) {
+-		return;
++		return false;
+ 	}
+ 	int rf = fts_gpio_read(0xa6, &fw, &stage);
+ 	int rv = fts_gpio_read(0xa8, &vendor, &stage);
+ 	printf("DAISY TOUCH: GPIO FT5446 fw r%d:%02x vendor r%d:%02x; probe only\n", rf, fw, rv, vendor);
++	return !rf && !rv;
++}
++
++#define FTS_CAPTURE_MS 300000u
++#define FTS_CAPTURE_LIMIT 4096u
++
++static uint64_t
++fts_capture_elapsed(uint64_t start)
++{
++	uint64_t ns;
++	absolutetime_to_nanoseconds(mach_absolute_time() - start, &ns);
++	return ns / NSEC_PER_MSEC;
++}
++
++/* One combined register-0 read per frame, as in Daisy's vendor driver.
++ * Observe IRQ on both sides but poll regardless: its falling edge may be a pulse.
++ * Keep the full raw frame for host validation; no contact state or HID here.
++ */
++static void
++fts_gpio_capture(void)
++{
++	uint8_t report[FTS_REPORT_LEN], previous[FTS_REPORT_LEN];
++	uint64_t start = mach_absolute_time(), last_log = 0;
++	unsigned reads = 0, good = 0, errors = 0, consecutive = 0, raw = 0, check = 30000;
++	const char *reason = "time";
++	printf("DAISY REPORT: begin reg00 bytes63 interval20ms duration300000ms limit4096; no HID\n");
++	while (fts_capture_elapsed(start) < FTS_CAPTURE_MS) {
++		uint64_t ms = fts_capture_elapsed(start);
++		unsigned stage = 0, received = 0;
++		bool irq_before = fts_gpio_level(GPIO_ATTN);
++		int r = fts_gpio_read_block(0, report, sizeof(report), &stage, &received);
++		bool irq_after = fts_gpio_level(GPIO_ATTN);
++		reads++;
++		if (!r && received != sizeof(report)) { r = -7; }
++		if (r) {
++			errors++;
++			consecutive++;
++			if (errors <= 8 || !(errors % 100)) {
++				printf("DAISY REPORT: error seq%u ms%llu r%d stage%u got%u consecutive%u\n",
++				    reads, (unsigned long long)ms, r, stage, received, consecutive);
++			}
++			if (consecutive == 8) { reason = "i2c"; break; }
++		} else {
++			good++;
++			consecutive = 0;
++			if (good == 1 || memcmp(report, previous, sizeof(report)) || ms - last_log >= 1000) {
++				static const char digits[] = "0123456789abcdef";
++				char hex[2 * FTS_REPORT_LEN + 1];
++				for (unsigned i = 0; i < sizeof(report); i++) {
++					hex[2 * i] = digits[report[i] >> 4];
++					hex[2 * i + 1] = digits[report[i] & 15];
++				}
++				hex[sizeof(hex) - 1] = 0;
++				printf("DAISY REPORT: seq%u ms%llu irq%u/%u got63 data%s\n",
++				    reads, (unsigned long long)ms, irq_before, irq_after, hex);
++				last_log = ms;
++				if (++raw == FTS_CAPTURE_LIMIT) { reason = "limit"; break; }
++			}
++			memcpy(previous, report, sizeof(report));
++		}
++		if (daisy_probe && ms >= check && check <= 60000) {
++			fts_rail_summary();
++			if (!fts_gpio_summary()) { reason = "identity"; break; }
++			check += 30000;
++		}
++		in_sleep(&touch_chan, 20);
++	}
++	printf("DAISY REPORT: done ms%llu reads%u ok%u errors%u raw%u reason%s\n",
++	    (unsigned long long)fts_capture_elapsed(start), reads, good, errors, raw, reason);
+ }
+ 
+ static void
+@@ -900,6 +989,10 @@ fts_gpio_probe(void)
+ 		}
+ 		return;
+ 	}
++	if (daisy_reports == 1 && !daisy_power) {
++		printf("DAISY REPORT: capture requires daisytouch_power=1; reset held\n");
++		return;
++	}
+ 	if (daisy_power) {
+ 		int r = 0;
+ 		for (unsigned rail = 0; rail < 2; rail++) {
+@@ -930,7 +1023,12 @@ fts_gpio_probe(void)
+ 	in_sleep(&touch_chan, 20);
+ 	tlmm_cfg(GPIO_RST, 0, 0, 3, true, true);
+ 	in_sleep(&touch_chan, 200);
+-	fts_gpio_summary();
++	bool identity = fts_gpio_summary();
++	if (daisy_reports == 1) {
++		if (identity) { fts_gpio_capture(); }
++		else { printf("DAISY REPORT: capture blocked by identity\n"); }
++		return;
++	}
+ 	if (daisy_probe) {
+ 		for (unsigned i = 0; i < 2; i++) {
+ 			in_sleep(&touch_chan, 30000);
+@@ -947,6 +1045,10 @@ fts_probe_thread(void *arg, wait_result_t result)
+ 	int r = -1;
+ 	(void)arg;
+ 	(void)result;
++	if (daisy_reports == 1 && !daisy_gpio) {
++		printf("DAISY REPORT: capture requires daisytouch_gpio=1\n");
++		goto out;
++	}
+ 	if (daisy_gpio) {
+ 		fts_gpio_probe();
+ 		goto out;
+@@ -1084,6 +1186,7 @@ vince_input_start(void)
+ 	(void)PE_parse_boot_argn("daisytouch_gpio", &daisy_gpio, sizeof(daisy_gpio));
+ 	(void)PE_parse_boot_argn("daisytouch_power", &daisy_power, sizeof(daisy_power));
+ 	(void)PE_parse_boot_argn("daisytouch_rpm_diag", &daisy_rpm_diag, sizeof(daisy_rpm_diag));
++	(void)PE_parse_boot_argn("daisytouch_reports", &daisy_reports, sizeof(daisy_reports));
+ 	tlmm = ml_io_map(TLMM_PA, TLMM_SIZE);
+ 	if (!tlmm) {
+ 		printf("VINCE INPUT: TLMM mapping failed\n");

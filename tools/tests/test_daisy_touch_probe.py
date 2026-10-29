@@ -31,6 +31,7 @@ def main():
             "0186-daisy-gpio-touch-diagnostic.patch",
             "0187-daisy-touch-rpm-power.patch",
             "0188-daisy-rpm-layout-diagnostic.patch",
+            "0191-daisy-gpio-report-capture.patch",
         ):
             subprocess.run([
                 "git", "-C", str(work), "apply", "--include=bsd/dev/vince_input.c",
@@ -50,7 +51,8 @@ def main():
         c = work / "test.c"
         c.write_text((TESTS / "daisy_touch_stubs.h").read_text() + "\n" + source +
                      "\n" + (TESTS / "daisy_touch_gpio.c").read_text() +
-                     "\n" + (TESTS / "daisy_touch_probe.c").read_text())
+                     "\n" + (TESTS / "daisy_touch_probe.c").read_text() +
+                     "\n" + (TESTS / "daisy_touch_reports.c").read_text())
         binary = work / "test"
         subprocess.run([
             os.environ.get("CC", "cc"), "-std=gnu11", "-O1", "-g", "-Wall", "-Wextra",
@@ -58,6 +60,10 @@ def main():
             str(c), "-o", str(binary),
         ], check=True)
         result = subprocess.run([str(binary)], check=True, stdout=subprocess.PIPE, text=True)
+        for reason in ("reasontime", "reasonlimit", "reasoni2c", "reasonidentity"):
+            assert reason in result.stdout, reason
+        frames = re.findall(r"DAISY REPORT: seq\d+ ms\d+ irq[01]/[01] got63 data([0-9a-f]+)", result.stdout)
+        assert frames and all(len(frame) == 126 for frame in frames)
         print(result.stdout.splitlines()[-1])
 
 
