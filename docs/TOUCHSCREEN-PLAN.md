@@ -3,8 +3,10 @@
 **Current milestone (0190):** RPM L10/L6 votes and matching ACKs, enabled/ready
 rail readback, and FT5446 GPIO identity (`0x5422`, firmware `0x0c`, vendor `0x51`)
 are validated on this handset, including the 30/60-second identity repeats.
-The complete evidence is in `artifacts/console-power-0190.log`. Next validate
-coherent 63-byte reports before contact decoding and touch HID delivery.
+The power evidence is in `artifacts/console-power-0190.log`. The 0191 report
+capture now contains live motion, two-contact and release samples, but five
+reserved-event records prevent a clean coherence result. Touch HID remains
+disabled while those records are investigated; see the 0191 result below.
 
 ## Hardware identified in TWRP — 2026-10-29
 
@@ -1090,3 +1092,77 @@ seconds of idle, separated taps, slow swipes and two-finger movement with full
 releases, then five minutes total runtime before returning to fastboot. Retrieve
 `artifacts/console-reports-0191.log` through temporary TWRP and run the analyzer.
 The capture is diagnostic-only and emits no touch HID events.
+
+### 0191 result: live contacts captured, coherence unresolved
+
+Temporarily booted TWRP on serial `6790a29e0305` (fastboot success in 1.777 s)
+and saved the entire catalog-visible console file:
+
+```sh
+python3 tools/pull_daisy_console.py artifacts/console-reports-0191.log --serial 6790a29e0305
+python3 tools/analyze_daisy_reports.py artifacts/console-reports-0191.log
+```
+
+- Saved file: **91,441 bytes**, 965 lines.
+- SHA-256: `61c5d3a5baf140b3e5452effa3180389b6d086739d22facfd573f33040ef1d60`.
+- Raw samples: **293 complete 63-byte lines**, through seq1955 at 111,067 ms.
+- Both RPM votes again return `r0`; `rails-ready1` precedes capture.
+- Initial and 30/60-second checks all return `id5422 tries1`, firmware `0c`,
+  vendor `51`; L10/L6 enabled/ready readbacks agree throughout those checks.
+- No report-transfer error, logger-stop/loss, or kernel panic markers appear.
+
+The user confirmed returning to fastboot after **about two minutes**. That
+explains the saved interval and missing five-minute completion summary; it
+does not establish a logger failure. The final logged line is complete.
+
+The analyzer accepts **204 samples structurally**: 180 with active contacts,
+24 with zero active contacts, four with two active contacts, 154 motion
+transitions between accepted samples, and 14 full-release transitions. Slots
+0 and 1 are observed, with raw active-coordinate ranges X 0–1074 and
+Y 493–1985. These are observed ranges, not a replacement for the 1080×2280
+geometry or proof that all slots/edges have been exercised.
+
+The **89 rejected samples** have exactly two forms:
+
+1. **84 startup samples**, seq1 through seq1488 (0–85,385 ms), contain byte 0
+   `00` followed by 62 `ff` bytes, with IRQ `1/1`. Their count nibble is 15,
+   so they are not valid zero-contact frames. This pattern stops before the
+   first accepted contact at seq1498, 85,951 ms, and never recurs in the saved
+   contact interval. It is consistent with data not yet being ready during
+   unconditional startup polling, but that interpretation is not yet proven.
+2. **Five contact samples** have header count 2 and event **3** in the second
+   record (slot 1). Every first record has event 2. The second records are:
+
+   | Sequence | Elapsed ms | Raw six-byte record | Raw X / Y |
+   | --- | --- | --- | --- |
+   | 1662 | 94967 | `c00016173030` | 0 / 1559 |
+   | 1664 | 95071 | `c00416183e30` | 4 / 1560 |
+   | 1706 | 97512 | `c00015981520` | 0 / 1432 |
+   | 1757 | 100274 | `c00016950b10` | 0 / 1685 |
+   | 1863 | 105873 | `c00015173e30` | 0 / 1303 |
+
+The pinned vendor header defines DOWN=0, UP=1, CONTACT=2. Its report path
+treats non-DOWN/non-CONTACT records as released; it supplies no basis for
+accepting event 3 as a second active contact. Doing so would conceal the
+count/event inconsistency. Keep these frames rejected rather than masking
+the event or adjusting the count.
+
+Example accepted samples: seq1498 has slot1 DOWN at (504,1804) alongside
+slot0 UP at (500,1804); seq1500 has two CONTACT records at (506,1805) and
+(894,1809); seq1504 has count 0 and slot1 UP at (524,1811). These demonstrate
+live report content, including mixed UP/active records, but the five suspect
+samples prevent declaring the stream coherent.
+
+Consecutive logged-read start intervals have minimum/median 50/52 ms despite
+the 20 ms sleep. These include transfer, logging, and scheduling time; they
+are not measured wire durations. Next instrument transaction duration and
+IRQ-ready behavior to investigate the second-record anomaly and startup
+pattern. The current evidence does not distinguish controller semantics,
+live-buffer updates, or transport timing, and does not justify changing power,
+mapping, reset timing, geometry, or enabling HID.
+
+The host analyzer now groups repeated errors so startup failures do not hide
+the five contact faults. A new regression uses exact raw device records and
+retains rejection of the startup sentinel and event 3. All six analyzer tests
+pass; analysis of this device capture correctly exits 1. The device is left
+in TWRP after collection.

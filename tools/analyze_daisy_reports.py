@@ -158,6 +158,16 @@ def analyze(text):
                 raw=raw, summary=summary, exit_code=1 if issues else 2 if missing else 0)
 
 
+def summarize_issues(issues):
+    """Keep repeated startup errors from hiding a different contact-frame fault."""
+    counts, first = Counter(), {}
+    for issue in issues:
+        category = issue.split(": ", 1)[-1] if issue.startswith("line ") else issue
+        counts[category] += 1
+        first.setdefault(category, issue)
+    return [f"{count} occurrence(s): {first[category]}" for category, count in counts.items()]
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("log", type=Path)
@@ -169,10 +179,11 @@ def main():
     print(f"Samples: {result['samples']}")
     print(f"Events (0=down, 1=up, 2=contact): {result['events']}; slots: {result['slots']}")
     print(f"Raw coordinate bounds (xmin,xmax,ymin,ymax): {result['bounds']}")
-    for issue in result["issues"][:20]:
+    groups = summarize_issues(result["issues"])
+    for issue in groups[:20]:
         print(f"FAIL: {issue}")
-    if len(result["issues"]) > 20:
-        print(f"... {len(result['issues']) - 20} further issues")
+    if len(groups) > 20:
+        print(f"... {len(groups) - 20} further issue categories")
     for item in result["missing"]:
         print(f"MISSING: {item}")
     print(("VALIDATED: coherent sampled reports with idle, motion, multitouch and release evidence",

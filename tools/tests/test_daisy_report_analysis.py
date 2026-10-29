@@ -5,7 +5,7 @@ import sys
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from analyze_daisy_reports import BEGIN, analyze, decode_report
+from analyze_daisy_reports import BEGIN, analyze, decode_report, summarize_issues
 
 
 IDLE = bytes.fromhex("000000" + "ff" * 60)
@@ -27,6 +27,30 @@ def capture(frames=(IDLE, DOWN, MULTI, UP, IDLE)):
 
 
 class Reports(unittest.TestCase):
+    def test_observed_0191_reports(self):
+        # Exact device bytes from console-reports-0191.log (SHA-256 in touch plan).
+        startup = bytes.fromhex("00" + "ff" * 62)  # seq1..1488, before first contact
+        first = bytes.fromhex("00000101f8170c473041f4070c0000" + "ff" * 48)  # seq1498
+        multi = bytes.fromhex("00000281fa170d5080837e07110000" + "ff" * 48)  # seq1500
+        up = bytes.fromhex("000000420c17130000" + "ff" * 54)  # seq1504
+        reserved = bytes.fromhex("0000028229061e7f70c00016173030" + "ff" * 48)  # seq1662
+        self.assertEqual([(c.slot, c.event, c.x, c.y) for c in decode_report(first)],
+                         [(1, 0, 504, 1804), (0, 1, 500, 1804)])
+        self.assertEqual([(c.slot, c.event, c.x, c.y) for c in decode_report(multi)],
+                         [(1, 2, 506, 1805), (0, 2, 894, 1809)])
+        self.assertEqual([c.event for c in decode_report(up)], [1])
+        with self.assertRaisesRegex(ValueError, "header count 15"):
+            decode_report(startup)
+        with self.assertRaisesRegex(ValueError, "reserved event for slot 1"):
+            decode_report(reserved)
+        # A plausible second-contact count must not make event 3 acceptable.
+        result = analyze(capture((startup,) * 84 + (first, multi, reserved, up)))
+        self.assertEqual(result["exit_code"], 1)
+        groups = summarize_issues(result["issues"])
+        self.assertEqual(len(groups), 2)
+        self.assertIn("84 occurrence(s)", groups[0])
+        self.assertIn("reserved event for slot 1", groups[1])
+
     def test_contacts_and_releases(self):
         self.assertEqual(decode_report(IDLE), [])
         self.assertEqual([(c.slot, c.event, c.x, c.y) for c in decode_report(MULTI)],

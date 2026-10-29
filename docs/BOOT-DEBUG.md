@@ -324,3 +324,15 @@ passed verification; `fastboot boot` succeeded on `6790a29e0305` in 0.538 s.
 See [the report test](TOUCHSCREEN-PLAN.md#0191-report-test-image-built-and-temporarily-booted)
 for the complete build command and capture protocol. Report hardware evidence
 is pending recovery extraction to `artifacts/console-reports-0191.log`.
+
+### 0191 report log recovered
+
+Saved `artifacts/console-reports-0191.log`: 91,441 bytes, 965 lines,
+SHA-256 `61c5d3a5baf140b3e5452effa3180389b6d086739d22facfd573f33040ef1d60`.
+It contains 293 full report lines through 111.067 seconds, stable RPM/rail/
+identity checks, and live contact/motion/release data. The user confirmed
+rebooting after about two minutes; the absent five-minute summary is expected
+for that interval and does not show logger failure. No logger-stop/loss markers
+appear. Five reserved-event contact records still block clean validation;
+see [the report result](TOUCHSCREEN-PLAN.md#0191-result-live-contacts-captured-coherence-unresolved).
+TWRP was booted temporarily and the phone remains there after extraction.
