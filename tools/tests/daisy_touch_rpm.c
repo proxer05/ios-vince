@@ -1,5 +1,8 @@
 /* Deterministic RPM peer; bounds-check all MMIO and every outbound vote. */
 static uint32_t smem[DR_SIZE / 4], ipc[0x1000 / 4];
+static uint32_t aux[DR_AUX_SIZE / 4];
+static uint32_t *peer_info, *peer_fifo;
+static unsigned aux_maps;
 static unsigned notifications, packets, waits, ring_writes, channel_writes, diag_maps;
 static unsigned fail_open, fail_map, bad_ack, stale_left, error_ldo;
 static bool no_ack, full_fifo, delay_reply;
@@ -13,8 +16,8 @@ static uint32_t pending_id;
 #define ALT_INFO_OFF 0x7000u
 #define ALT_FIFO_OFF 0x8000u
 #define CID 7u
-#define TX(off) smem[(INFO_OFF + (off)) / 4]
-#define RX(off) smem[(INFO_OFF + DR_HALF + (off)) / 4]
+#define TX(off) peer_info[(off) / 4]
+#define RX(off) peer_info[(DR_HALF + (off)) / 4]
 
 static void
 item(unsigned id, uint32_t off, uint32_t n)
@@ -31,6 +34,10 @@ fresh_rpm(void)
 {
 	memset(smem, 0, sizeof(smem));
 	memset(ipc, 0, sizeof(ipc));
+	memset(aux, 0, sizeof(aux));
+	aux_maps = 0;
+	peer_info = smem + INFO_OFF / 4;
+	peer_fifo = smem + FIFO_OFF / 4;
 	notifications = packets = waits = ring_writes = channel_writes = diag_maps = 0;
 	fail_open = fail_map = bad_ack = stale_left = error_ldo = delayed = 0;
 	no_ack = full_fifo = delay_reply = false;
@@ -45,6 +52,32 @@ fresh_rpm(void)
 	smem[(TABLE_OFF + 20) / 4] = CID;
 	smem[(TABLE_OFF + 24) / 4] = 0x20f;
 	smem[(TABLE_OFF + 28) / 4] = 1;
+}
+
+static void
+aux_item(unsigned id, uint32_t off, uint32_t n)
+{
+	item(id, off, n);
+	smem[(208 + 16 * id + 12) / 4] = DR_AUX;
+}
+
+static void
+daisy_aux_layout(bool aux_info, bool aux_fifo)
+{
+	/* Exact observed item13/table rows and item18; FIFO placement is a fixture. */
+	const unsigned flags[] = {0x20f, 0x210, 0x212, 0x213, 0x211};
+	item(13, 0x6710, 0x800);
+	for (unsigned i = 0; i < 5; i++) {
+		unsigned off = 0x6710 + 32 * (4 + i);
+		memcpy((char *)smem + off, "rpm_requests", sizeof("rpm_requests"));
+		smem[(off + 20) / 4] = 4 + i;
+		smem[(off + 24) / 4] = flags[i];
+		smem[(off + 28) / 4] = 1;
+	}
+	item(18, INFO_OFF, 88);
+	item(342, FIFO_OFF, 1024);
+	if (aux_info) { aux_item(18, 0, 88); peer_info = aux; }
+	if (aux_fifo) { aux_item(342, 0x1000, 1024); peer_fifo = aux + 0x1000 / 4; }
 }
 
 static void
@@ -76,7 +109,7 @@ reply(uint32_t id)
 	unsigned used = (RX(DR_HEAD) - RX(DR_TAIL)) & (dr_half - 1);
 	assert(dr_half - 4 - used >= words * 4);
 	for (unsigned i = 0; i < words; i++) {
-		smem[(FIFO_OFF + dr_half + RX(DR_HEAD)) / 4] = p[i];
+		peer_fifo[(dr_half + RX(DR_HEAD)) / 4] = p[i];
 		RX(DR_HEAD) = (RX(DR_HEAD) + 4) & (dr_half - 1);
 	}
 	RX(DR_FHEAD) = 1;
@@ -101,7 +134,7 @@ peer(void)
 		assert(available == 72 && TX(DR_FHEAD));
 		uint32_t p[18];
 		for (unsigned i = 0; i < 18; i++) {
-			p[i] = smem[(FIFO_OFF + TX(DR_TAIL)) / 4];
+			p[i] = peer_fifo[TX(DR_TAIL) / 4];
 			TX(DR_TAIL) = (TX(DR_TAIL) + 4) & (dr_half - 1);
 		}
 		packets++;
@@ -129,6 +162,7 @@ checked(vm_offset_t base, uint32_t off)
 	uintptr_t at = base + off;
 	assert(!(at & 3));
 	assert((at >= (uintptr_t)smem && at <= (uintptr_t)smem + sizeof(smem) - 4) ||
+	    (at >= (uintptr_t)aux && at <= (uintptr_t)aux + sizeof(aux) - 4) ||
 	    (at >= (uintptr_t)ipc && at <= (uintptr_t)ipc + sizeof(ipc) - 4));
 	return (uint32_t *)at;
 }
@@ -175,6 +209,12 @@ ml_io_map(vm_offset_t addr, vm_size_t n)
 {
 	assert(!(addr & 0xfff) && n && !(n & 0xfff));
 	if (addr == (DR_IPC & ~0xfffu)) { return fail_map == 1 ? 0 : (vm_offset_t)ipc; }
+	if (addr >= DR_AUX && addr < DR_AUX + DR_AUX_SIZE) {
+		assert(n <= DR_AUX_SIZE && addr - DR_AUX <= DR_AUX_SIZE - n);
+		aux_maps++;
+		if (fail_map == 4) { return 0; }
+		return (vm_offset_t)aux + addr - DR_AUX;
+	}
 	assert(addr >= DR_SMEM && addr - DR_SMEM <= DR_SIZE - n);
 	if (addr == DR_SMEM + ALT_TABLE_OFF || addr == DR_SMEM + ALT_INFO_OFF ||
 	    addr == DR_SMEM + ALT_FIFO_OFF) { diag_maps++; }
@@ -185,6 +225,61 @@ ml_io_map(vm_offset_t addr, vm_size_t n)
 int
 main(void)
 {
+	/* The on-device layout selects edge 15/CID4, even beside other RPM edges. */
+	for (unsigned regions = 0; regions < 4; regions++) {
+		fresh_rpm(); daisy_aux_layout(regions & 1, regions & 2);
+		TX(DR_STATE) = RX(DR_STATE) = DR_OPENED;
+		TX(DR_HEAD) = 16; TX(DR_TAIL) = 4; RX(DR_HEAD) = 24; RX(DR_TAIL) = 8;
+		static uint32_t before_smem[DR_SIZE / 4], before_aux[DR_AUX_SIZE / 4];
+		memcpy(before_smem, smem, sizeof(smem));
+		memcpy(before_aux, aux, sizeof(aux));
+		assert(daisy_touch_rpm_layout() == 0 && dr_layout_stage == 6);
+		assert(dr_tx == (vm_offset_t)peer_info && dr_out == (vm_offset_t)peer_fifo);
+		assert(aux_maps == (regions & 1u) + ((regions >> 1) & 1u));
+		assert(!memcmp(before_smem, smem, sizeof(smem)) && !memcmp(before_aux, aux, sizeof(aux)));
+		assert(!notifications && !packets && !ring_writes && !channel_writes);
+		/* The same mapper feeds opt-in power with the existing ACK/voltage checks. */
+		fresh_rpm(); daisy_aux_layout(regions & 1, regions & 2);
+		assert(daisy_touch_power_on() == 0 && packets == 2);
+	}
+	/* Region bounds, zero offsets, page crossing, and aux-base reserved bits. */
+	for (unsigned reserved = 0; reserved < 4; reserved++) {
+		fresh_rpm(); dr_smem = (vm_offset_t)smem;
+		aux_item(18, 0, 88);
+		smem[(208 + 16 * 18 + 12) / 4] |= reserved;
+		uint32_t size = 0;
+		assert(dr_item(18, &size) == (vm_offset_t)aux && size == 88);
+	}
+	const uint32_t offsets[] = {0xffc, DR_AUX_SIZE - 88};
+	for (unsigned i = 0; i < 2; i++) {
+		fresh_rpm(); dr_smem = (vm_offset_t)smem;
+		aux_item(18, offsets[i], 88);
+		uint32_t size = 0;
+		assert(dr_item(18, &size) == (vm_offset_t)aux + offsets[i] && size == 88);
+	}
+	for (unsigned fault = 0; fault < 10; fault++) {
+		fresh_rpm(); daisy_aux_layout(true, true);
+		if (fault == 0) { aux_item(18, 1, 88); }
+		if (fault == 1) { aux_item(18, 0, 87); }
+		if (fault == 2) { aux_item(18, DR_AUX_SIZE - 84, 88); }
+		if (fault == 3) { aux_item(18, 0xfffffffc, 88); }
+		if (fault == 4) { aux_item(18, 0, DR_AUX_SIZE + 4); }
+		if (fault == 5) { smem[(208 + 16 * 18 + 12) / 4] = DR_AUX + 4; }
+		if (fault == 6) { aux_item(18, 0, 0); }
+		if (fault == 7) { smem[(208 + 16 * 18) / 4] = 0; }
+		if (fault == 8) { item(18, 0, 88); }
+		if (fault == 9) { fail_map = 4; }
+		assert(daisy_touch_power_on() == -1 && dr_layout_stage == 4);
+		assert(aux_maps == (fault == 9));
+		assert(!notifications && !packets && !ring_writes && !channel_writes);
+	}
+	/* A subsequent rejected layout cannot expose stale channel/FIFO pointers. */
+	fresh_rpm(); daisy_aux_layout(true, true);
+	assert(daisy_touch_rpm_layout() == 0);
+	item(13, DR_SIZE - 4, 2048);
+	assert(daisy_touch_rpm_layout() == -1 && dr_layout_stage == 2);
+	assert(!dr_tx && !dr_rx && !dr_out && !dr_in && !dr_half);
+	assert(!notifications && !packets && !ring_writes && !channel_writes);
 	/* Layout-only diagnostics never write a channel, FIFO, or doorbell. */
 	fresh_rpm();
 	assert(daisy_touch_rpm_layout() == 0 && dr_layout_stage == 6);
@@ -283,6 +378,6 @@ main(void)
 	assert(dr_ack(ack, 32, 42) == -7);
 	ack[6] = 5;
 	assert(dr_ack(ack, 32, 42) == -6);
-	puts("PASS: RPM SMEM bounds/tables, read-only diagnostics, handshake, votes, FIFO/ACK safety, timeouts");
+	puts("PASS: Daisy primary/aux SMEM bounds, read-only snapshots, handshake, votes, FIFO/ACK safety");
 	return 0;
 }

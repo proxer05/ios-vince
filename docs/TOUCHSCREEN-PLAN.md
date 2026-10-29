@@ -699,3 +699,88 @@ no partition was flashed.
 item 13 and item 266 metadata/candidates, selected CID, stage/result, all L10/L6
 observer lines, reset/SDA/SCL levels, and the repeated 30/60-second output. This
 image performs no RPM/SMD/PMIC/I²C writes and emits no HID events.
+
+## 0188 device result / Daisy Linux RPM audit (0189)
+
+User-transcribed 0188 output:
+
+```text
+DAISY RPM: item13 a1 off6710 size800 ext0
+DAISY RPM: table13 ch4 rpm_requests cid4 flags20f ref1
+DAISY RPM: table13 ch5 rpm_requests cid5 flags210 ref1
+DAISY RPM: table13 ch6 rpm_requests cid6 flags212 ref1
+DAISY RPM: table13 ch7 rpm_requests cid7 flags213 ref1
+DAISY RPM: table13 ch8 rpm_requests cid8 flags211 ref1
+DAISY RPM: table13 used5 candidates5 selected4
+DAISY RPM: item18 a1 off0 size58 ext60000
+DAISY RPM: item266 a0 off0 size0 ext0
+DAISY RPM: layout result -1 stage4 (no writes)
+DAISY TOUCH: L10 p149 r0 type 21/09 st00 en00 v00/54
+DAISY TOUCH: L6 p145 r0 type 21/2a st82 en00 v00/04
+DAISY TOUCH: layout-only reset0 SDA1 SCL1 irq1
+```
+
+The selected channel is CID4 on edge 15 (`0x20f`). Item18 (`14 + 4`) has
+the expected `0x58`/88-byte size, but resides at auxiliary base `0x60000`,
+offset zero. The primary-only mapper rejects this at stage 4; item342
+(`338 + 4`, the FIFO) was therefore not inspected. Item266 is unallocated.
+The heap line and complete repeated snapshots were not supplied. The rail
+lines still do not establish reliable enable/ready readback or measured voltage.
+
+At the user's request, audited the **Daisy vendor Linux tree**:
+[MiCode/Xiaomi_Kernel_OpenSource, daisy-o-oss, commit
+6421aa5cdc56e9ef7c6329e0a05164503e1513ef](https://github.com/MiCode/Xiaomi_Kernel_OpenSource/tree/6421aa5cdc56e9ef7c6329e0a05164503e1513ef).
+The relevant source files are preserved with their original paths under
+`artifacts/daisy-touch-identification/linux-daisy-6421aa5/`; all 16 downloaded
+files were verified against that commit's Git tree blob IDs.
+
+Key source locations (relative to that Linux tree):
+
+- `drivers/soc/qcom/smem.c:301–333`: the legacy TOC's `reserved &
+  BASE_ADDR_MASK` is the physical region base; zero selects primary SMEM.
+  `smem_phys_to_virt()` at line 199 resolves against configured regions;
+  auxiliary regions are mapped with `ioremap_nocache()` during probe near
+  line 1385. An auxiliary item may legitimately start at offset zero.
+- `arch/arm/boot/dts/qcom/msm8953-daisy.dtsi:1136–1155,1210–1218`:
+  `rpm_requests`, edge 15; primary SMEM `0x86300000/0x100000`, auxiliary
+  SMEM `0x60000/0x8000`, and RPM doorbell `0x0b011008`, offset 0, mask 1.
+- `drivers/soc/qcom/smd_private.c:267` explicitly uses word access for RPM
+  edges. `smd_private.h:80–92` defines the 44-byte half-channel; `smd.c:1672`
+  resolves info/FIFO items independently and splits the FIFO equally into
+  send/receive rings. Table bases come from `include/soc/qcom/smem.h`.
+  `smd.c:1043,1551` reserves four bytes and prefixes packets with five words
+  (payload length followed by four zeros).
+- `drivers/soc/qcom/rpm-smd.c:112–128,1199–1286,1878` opens the named SMD
+  edge and serializes `req\0`, request length, message ID, set, resource type,
+  resource ID, data length, then key/length/value records. Active set is zero
+  (`include/soc/qcom/rpm-smd.h:22`). Its ACK code at lines 359–409 extracts the
+  request ID and checks trailing `err\0` data. These match our packet layout;
+  XNU additionally bounds complete replies and rejects malformed records.
+- `drivers/regulator/rpm-smd-regulator.c:130–131,434–447` uses `swen` and `uv`
+  with four-byte values. `msm-pm8953-rpm-regulator.dtsi:159–172,223–236` maps
+  L6/L10 to `ldoa` IDs 6/10. `msm8953-regulator.dtsi:170,219` fixes their
+  voltages at 1.8 V/2.85 V. The recovered touchscreen DT and vendor FT5446
+  driver establish their consumer and enable order as documented above.
+
+`0189-daisy-rpm-aux-smem.patch` admits exactly the DT-proven auxiliary region
+alongside primary SMEM. It validates the complete allocation and rounded map
+span before mapping, permits offset zero only for the auxiliary region, and
+prints each accepted item's physical address. The existing opt-in layout
+diagnostic additionally snapshots TX/RX states and head/tail indices with a
+`bounds` flag. The snapshot does not consume FIFO contents; `bounds1` describes
+index validity only, not a completed handshake. Repeated layout checks clear
+previously selected channel pointers before resolving the current TOC.
+
+GCC and Clang ASan/UBSan suites pass. New actual-source RPM cases reproduce
+the observed five-channel table and CID4 selection, exercise independent
+primary/auxiliary info and FIFO placement, offset zero, page crossing, end-of-
+region bounds, reserved base bits, map failures, and reset of stale selection.
+Synthetic auxiliary FIFO placement is a test fixture, not a device observation.
+Memory snapshots and write counters verify diagnostic-only operation; the mock
+peer verifies exact votes/ACKs through each mapping combination. Existing input
+tests also pass for selector precedence, reset handling and stable rail reads.
+
+The next temporary boot uses `daisytouch_rpm_diag=1` to capture item342,
+the accepted physical ranges, states/indices, and repeated rail observations.
+Power remains separately opt-in; successful RPM/rail readback, identity and
+coherent touch reports still require hardware evidence.

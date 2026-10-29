@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise the actual 0187/0188 RPM C with a bounded legacy-SMEM/SMD peer."""
+"""Exercise the actual RPM C with bounded primary/auxiliary SMEM and SMD."""
 import os
 from pathlib import Path
 import re
@@ -21,6 +21,10 @@ def main():
         subprocess.run([
             "git", "-C", str(work), "apply", "--include=bsd/dev/daisy_touch_rpm.c",
             str(ROOT / "xnu/patches/0188-daisy-rpm-layout-diagnostic.patch"),
+        ], check=True)
+        subprocess.run([
+            "git", "-C", str(work), "apply", "--include=bsd/dev/daisy_touch_rpm.c",
+            str(ROOT / "xnu/patches/0189-daisy-rpm-aux-smem.patch"),
         ], check=True)
         source = (work / "bsd/dev/daisy_touch_rpm.c").read_text()
         source = re.sub(r"^#include .*\n", "", source, flags=re.M)

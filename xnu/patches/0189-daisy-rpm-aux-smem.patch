@@ -1,0 +1,83 @@
+diff --git a/bsd/dev/daisy_touch_rpm.c b/bsd/dev/daisy_touch_rpm.c
+index d4c5598..5840fc7 100644
+--- a/bsd/dev/daisy_touch_rpm.c
++++ b/bsd/dev/daisy_touch_rpm.c
+@@ -21,6 +21,9 @@ int daisy_touch_rpm_layout(void);
+ 
+ #define DR_SMEM 0x86300000u
+ #define DR_SIZE 0x100000u
++/* Daisy msm8953-daisy.dtsi: SMEM aux-mem1, confirmed by item18 on device. */
++#define DR_AUX 0x60000u
++#define DR_AUX_SIZE 0x8000u
+ #define DR_IPC 0x0b011008u
+ #define DR_REQ 0x00716572u
+ #define DR_MSGID 0x2367736du
+@@ -76,25 +79,38 @@ dr_signal(void)
+ 	dr_wr(dr_ipc, DR_IPC & 0xfffu, 1);
+ }
+ 
+-/* Legacy allocations only; reject external/unaligned/out-of-range items. */
++/* Legacy TOC aux_base follows Daisy Linux smem.c; only DT-proven regions. */
+ static vm_offset_t
+ dr_item(unsigned item, uint32_t *size)
+ {
+-	if (item >= 419) { return 0; }
++	if (!dr_smem || !size || item >= 419) { return 0; }
++	*size = 0;
+ 	unsigned info = 208 + 16 * item;
+ 	uint32_t allocated = dr_rd(dr_smem, info);
+ 	uint32_t off = dr_rd(dr_smem, info + 4), n = dr_rd(dr_smem, info + 8);
+ 	uint32_t raw_ext = dr_rd(dr_smem, info + 12), ext = raw_ext & ~3u;
+ 	printf("DAISY RPM: item%u a%u off%x size%x ext%x\n", item, allocated, off, n, raw_ext);
+ 	if (!allocated) { return 0; }
+-	if ((ext && ext != DR_SMEM) || !n || n > DR_SIZE || off < 0x2000 || off > DR_SIZE - n || ((off | n) & 3u)) {
++	uint32_t base, limit, min_off;
++	if (!ext || ext == DR_SMEM) {
++		base = DR_SMEM; limit = DR_SIZE; min_off = 0x2000;
++	} else if (ext == DR_AUX) {
++		base = DR_AUX; limit = DR_AUX_SIZE; min_off = 0;
++	} else {
+ 		return 0;
+ 	}
+-	vm_offset_t map = ml_io_map(DR_SMEM + (off & ~0xfffu), ((off & 0xfffu) + n + 0xfffu) & ~0xfffu);
++	/* Check the complete item before arithmetic or page-rounded mapping. */
++	if (!n || n > limit || off < min_off || off > limit - n || ((off | n) & 3u)) {
++		return 0;
++	}
++	uint32_t page = off & ~0xfffu, span = ((off & 0xfffu) + n + 0xfffu) & ~0xfffu;
++	if (span > limit || page > limit - span) { return 0; }
++	vm_offset_t map = ml_io_map(base + page, span);
+ 	if (!map) {
+ 		printf("DAISY RPM: item%u map failed\n", item);
+ 		return 0;
+ 	}
++	printf("DAISY RPM: mapped item%u pa%x size%x\n", item, base + off, n);
+ 	*size = n;
+ 	return map + (off & 0xfffu);
+ }
+@@ -137,6 +153,9 @@ static int
+ dr_layout(void)
+ {
+ 	uint32_t size = 0;
++	/* Repeated diagnostics must not retain a previously accepted channel. */
++	dr_tx = dr_rx = dr_out = dr_in = 0;
++	dr_half = 0;
+ 	dr_layout_stage = 1;
+ 	dr_smem = ml_io_map(DR_SMEM, 0x2000);
+ 	dr_ipc = ml_io_map(DR_IPC & ~0xfffu, 0x1000);
+@@ -167,6 +186,15 @@ int
+ daisy_touch_rpm_layout(void)
+ {
+ 	int r = dr_layout();
++	if (!r) {
++		uint32_t th = dr_rd(dr_tx, DR_HEAD), tt = dr_rd(dr_tx, DR_TAIL);
++		uint32_t rh = dr_rd(dr_rx, DR_HEAD), rt = dr_rd(dr_rx, DR_TAIL);
++		bool bounds = th < dr_half && tt < dr_half && rh < dr_half && rt < dr_half &&
++		    !((th | tt | rh | rt) & 3u);
++		/* Snapshot only: no FIFO consumption, channel reset, or doorbell. */
++		printf("DAISY RPM: snapshot half%x state%u/%u tx%x/%x rx%x/%x bounds%u\n",
++		    dr_half, dr_rd(dr_tx, DR_STATE), dr_rd(dr_rx, DR_STATE), th, tt, rh, rt, bounds);
++	}
+ 	/* Linux scans both legacy tables. Report table 266, but never power from it. */
+ 	if (dr_smem) {
+ 		uint32_t size = 0;
