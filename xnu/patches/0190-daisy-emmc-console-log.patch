@@ -1,0 +1,249 @@
+diff --git a/bsd/conf/files b/bsd/conf/files
+index 2e1440f..876c278 100644
+--- a/bsd/conf/files
++++ b/bsd/conf/files
+@@ -114,6 +114,7 @@ bsd/dev/sweet_usb.c			standard
+ bsd/dev/vince_mmc.c			standard
+ bsd/dev/vince_input.c			standard
+ bsd/dev/daisy_touch_rpm.c			standard
++bsd/dev/daisy_log.c			standard
+ bsd/dev/vince_ctl.c			standard
+ bsd/dev/vince_smd.c			standard
+ bsd/dev/vince_pmic.c			standard
+diff --git a/bsd/dev/daisy_log.c b/bsd/dev/daisy_log.c
+new file mode 100644
+index 0000000..57a3319
+--- /dev/null
++++ b/bsd/dev/daisy_log.c
+@@ -0,0 +1,175 @@
++/*
++ * Opt-in eMMC console logging after the root vnode is installed. Replays the
++ * existing early VINCE RAM ring and follows it using a separate kernel thread.
++ * daisylog=1 requires cpus=1 and mmcrw=1. Filesystem I/O never runs inside the
++ * console path or its locks. The fixed, bounded file contains the latest
++ * logging-enabled boot; recovery can extract it read-only with SleuthKit.
++ */
++#if defined(ARM64_BOARD_CONFIG_VINCE)
++#include <sys/param.h>
++#include <sys/systm.h>
++#include <sys/vnode.h>
++#include <sys/vnode_internal.h>
++#include <sys/fcntl.h>
++#include <sys/mount.h>
++#include <sys/proc.h>
++#include <sys/uio.h>
++#include <kern/clock.h>
++#include <kern/thread.h>
++#include <kern/sched_prim.h>
++#include <pexpert/pexpert.h>
++
++extern unsigned int real_ncpus;
++extern int daisy_console_read(uint64_t *, char *, unsigned, uint64_t *);
++void daisy_log_start(void);
++
++#define DL_PATH "/private/var/log/daisy-console.log"
++#define DL_MAGIC "# DAISY EMMCLOG v1\n"
++#define DL_CHUNK 16384u
++#define DL_BATCH (1024u * 1024u)
++#define DL_LIMIT (32u * 1024u * 1024u)
++#define DL_RESERVE 128u
++static char dl_buffer[DL_CHUNK];
++static bool dl_started;
++static int dl_wait;
++
++static void
++dl_sleep(unsigned ms)
++{
++	uint64_t deadline;
++	clock_interval_to_deadline(ms, NSEC_PER_MSEC, &deadline);
++	(void)assert_wait_deadline(&dl_wait, THREAD_UNINT, deadline);
++	thread_block(THREAD_CONTINUE_NULL);
++}
++
++static int
++dl_write(vnode_t vp, off_t *offset, const char *data, unsigned n, vfs_context_t ctx)
++{
++	if (*offset < 0 || *offset > DL_LIMIT || n > DL_LIMIT - (uint64_t)*offset) { return EFBIG; }
++	int resid = 0;
++	int err = vn_rdwr(UIO_WRITE, vp, (caddr_t)(uintptr_t)data, (int)n, *offset,
++	    UIO_SYSSPACE, IO_NODELOCKED | IO_SYNC, vfs_context_ucred(ctx), &resid, vfs_context_proc(ctx));
++	/* On short/error writes stop; never retry a partially persisted chunk. */
++	if (!err && resid) { err = EIO; }
++	if (!err) { *offset += n; }
++	return err;
++}
++
++static int
++dl_open(vnode_t *out, vfs_context_t ctx)
++{
++	vnode_t vp = NULLVP;
++	int flags = FREAD | FWRITE | O_CREAT | O_NOFOLLOW;
++	int err = vnode_open(DL_PATH, flags, 0600, 0, &vp, ctx);
++	if (err) { return err; }
++	if (!vnode_isreg(vp)) { err = EINVAL; goto fail; }
++	/* Only replace a previous logger file, never an unrelated existing file. */
++	off_t size = 0;
++	err = vnode_size(vp, &size, ctx);
++	if (err) { goto fail; }
++	if (size) {
++		char magic[sizeof(DL_MAGIC) - 1];
++		int resid = 0;
++		err = vn_rdwr(UIO_READ, vp, magic, sizeof(magic), 0, UIO_SYSSPACE,
++		    IO_NODELOCKED, vfs_context_ucred(ctx), &resid, vfs_context_proc(ctx));
++		if (err) { goto fail; }
++		if (resid || memcmp(magic, DL_MAGIC, sizeof(magic))) { err = EEXIST; goto fail; }
++	}
++	struct vnode_attr va;
++	VATTR_INIT(&va);
++	VATTR_SET(&va, va_data_size, 0);
++	VATTR_SET(&va, va_mode, 0600);
++	err = vnode_setattr(vp, &va, ctx);
++	if (err) { goto fail; }
++	off_t offset = 0;
++	err = dl_write(vp, &offset, DL_MAGIC, sizeof(DL_MAGIC) - 1, ctx);
++	if (!err) { err = VNOP_FSYNC(vp, MNT_WAIT, ctx); }
++	if (err) { goto fail; }
++	*out = vp;
++	return 0;
++fail:
++	(void)vnode_close(vp, FREAD | FWRITE, ctx);
++	return err;
++}
++
++static int
++dl_drain(vnode_t vp, uint64_t *cursor, off_t *offset, bool *caught_up, vfs_context_t ctx)
++{
++	*caught_up = false;
++	unsigned budget = DL_BATCH;
++	while (budget) {
++		if (*offset > DL_LIMIT - DL_RESERVE) { return EFBIG; }
++		unsigned room = DL_LIMIT - DL_RESERVE - (unsigned)*offset;
++		if (!room) { return EFBIG; }
++		uint64_t next = *cursor, lost = 0;
++		int n = daisy_console_read(&next, dl_buffer, MIN(DL_CHUNK, MIN(room, budget)), &lost);
++		if (n < 0) { return EIO; }
++		if (!n) { *caught_up = true; return 0; }
++		if (lost) {
++			char marker[96];
++			int len = snprintf(marker, sizeof(marker), "\n# DAISY EMMCLOG lost %llu console bytes\n", (unsigned long long)lost);
++			int err = dl_write(vp, offset, marker, (unsigned)len, ctx);
++			if (err) { return err; }
++		}
++		/* Preserve room for the terminal size-limit marker, including a gap marker. */
++		if (*offset + n > DL_LIMIT - DL_RESERVE) { return EFBIG; }
++		int err = dl_write(vp, offset, dl_buffer, (unsigned)n, ctx);
++		if (err) { return err; }
++		*cursor = next;
++		budget -= (unsigned)n;
++	}
++	return 0;
++}
++
++static void
++dl_thread(__unused void *arg, __unused wait_result_t wr)
++{
++	vfs_context_t ctx = vfs_context_kernel();
++	vnode_t vp = NULLVP;
++	int err = dl_open(&vp, ctx);
++	if (err) {
++		printf("DAISY EMMCLOG: open failed %d\n", err);
++		thread_terminate(current_thread());
++		return;
++	}
++	printf("DAISY EMMCLOG: saving console to %s (32 MiB limit)\n", DL_PATH);
++	uint64_t cursor = 0;
++	off_t offset = sizeof(DL_MAGIC) - 1;
++	for (;;) {
++		bool caught_up = false;
++		err = dl_drain(vp, &cursor, &offset, &caught_up, ctx);
++		if (err) { break; }
++		err = VNOP_FSYNC(vp, MNT_WAIT, ctx);
++		if (err) { break; }
++		dl_sleep(caught_up ? 1000 : 250);
++	}
++	if (err == EFBIG) {
++		const char end[] = "\n# DAISY EMMCLOG stopped: 32 MiB file limit\n";
++		int e = dl_write(vp, &offset, end, sizeof(end) - 1, ctx);
++		if (e) { err = e; }
++	}
++	int sync_err = VNOP_FSYNC(vp, MNT_WAIT, ctx);
++	int close_err = vnode_close(vp, FREAD | FWRITE, ctx);
++	printf("DAISY EMMCLOG: stopped error %d sync %d close %d bytes %lld\n", err, sync_err, close_err, (long long)offset);
++	thread_terminate(current_thread());
++}
++
++void
++daisy_log_start(void)
++{
++	int enabled = 0, cpus = 0, rw = 0;
++	(void)PE_parse_boot_argn("daisylog", &enabled, sizeof(enabled));
++	if (enabled != 1 || dl_started) { return; }
++	(void)PE_parse_boot_argn("cpus", &cpus, sizeof(cpus));
++	(void)PE_parse_boot_argn("mmcrw", &rw, sizeof(rw));
++	if (cpus != 1 || real_ncpus != 1 || rw != 1) {
++		printf("DAISY EMMCLOG: requires cpus=1 and mmcrw=1\n");
++		return;
++	}
++	dl_started = true;
++	thread_t thread;
++	kern_return_t kr = kernel_thread_start(dl_thread, NULL, &thread);
++	if (kr == KERN_SUCCESS) { thread_deallocate(thread); }
++	else { printf("DAISY EMMCLOG: thread start failed %d\n", kr); }
++}
++#endif
+diff --git a/bsd/kern/bsd_init.c b/bsd/kern/bsd_init.c
+index f100115..0d174a3 100644
+--- a/bsd/kern/bsd_init.c
++++ b/bsd/kern/bsd_init.c
+@@ -919,6 +919,8 @@ bsd_init(void)
+ 	{
+ 		extern void vince_rootfix(void);
+ 		vince_rootfix();
++		extern void daisy_log_start(void);
++		daisy_log_start();
+ 	}
+ #endif
+ 
+diff --git a/osfmk/console/serial_console.c b/osfmk/console/serial_console.c
+index 55c39c4..af5f067 100644
+--- a/osfmk/console/serial_console.c
++++ b/osfmk/console/serial_console.c
+@@ -284,6 +284,38 @@ sweet_log_append(const char *c, int size)
+ 	}
+ 	vince_conlog_pos = pos;
+ }
++
++/* Thread-only snapshot for daisylog=1, restricted to the cpus=1 bring-up boot.
++ * The flush mutex excludes normal writers; masking IRQs excludes same-CPU
++ * direct/PPL output while copying. Never hold either across filesystem I/O.
++ */
++int daisy_console_read(uint64_t *, char *, unsigned, uint64_t *);
++int
++daisy_console_read(uint64_t *cursor, char *buf, unsigned capacity, uint64_t *lost)
++{
++	if (!cursor || !buf || !lost || !capacity || capacity > 16384) { return -1; }
++	*lost = 0;
++	if (!is_console_initialized() || console_suspended || kernel_debugger_entry_count) { return 0; }
++	lck_mtx_lock(&console_ring.flush_lock);
++	boolean_t enabled = ml_set_interrupts_enabled(FALSE);
++	uint64_t end = vince_conlog_pos, start = *cursor;
++	int n = -1;
++	if (start <= end) {
++		if (end - start > sizeof(vince_conlog)) {
++			*lost = end - start - sizeof(vince_conlog);
++			start = end - sizeof(vince_conlog);
++		}
++		n = (int)MIN(end - start, capacity);
++		unsigned at = (unsigned)(start & (sizeof(vince_conlog) - 1));
++		unsigned first = (unsigned)MIN((unsigned)n, sizeof(vince_conlog) - at);
++		memcpy(buf, vince_conlog + at, first);
++		memcpy(buf + first, vince_conlog, (unsigned)n - first);
++		*cursor = start + (unsigned)n;
++	}
++	ml_set_interrupts_enabled(enabled);
++	lck_mtx_unlock(&console_ring.flush_lock);
++	return n;
++}
+ #endif
+ #if defined(ARM64_BOARD_CONFIG_SWEET)
+ extern void sweet_log_append(const char *c, int size);  /* bsd/dev/sweet_ufs.c */

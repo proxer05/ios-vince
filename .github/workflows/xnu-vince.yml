@@ -72,7 +72,7 @@ jobs:
           MAKEFLAGS: ${{ inputs.keep_going == 'false' && '' || '-k' }}
         run: bash build.sh
 
-      - name: Verify daisy Bluetooth fix and FT5446 probe in kernel
+      - name: Verify Daisy diagnostics and upstream GPU service in kernel
         if: env.MACHINE_CONFIG == 'VINCE'
         run: |
           python3 - <<'PY'
@@ -88,10 +88,13 @@ jobs:
               b'daisytouch_power', b'DAISY RPM: power result', b'DAISY TOUCH: RPM r%d rails-ready',
               b'daisytouch_rpm_diag', b'DAISY RPM: layout result', b'DAISY TOUCH: layout-only',
               b'DAISY RPM: mapped item', b'DAISY RPM: snapshot half',
+              b'daisylog', b'DAISY EMMCLOG: saving console', b'# DAISY EMMCLOG v1',
+              b'/private/var/log/daisy-console.log',
+              b'VinceGPU: service started and registered', b'VinceGPUUserClient',
           ):
               if marker not in data:
                   raise SystemExit(f'{kernel}: missing daisy fix marker {marker!r}')
-          print(f'{kernel}: daisy Bluetooth fix and FT5446 probe present')
+          print(f'{kernel}: Daisy Bluetooth/touch/RPM/eMMC diagnostics and VinceGPU present')
           PY
 
       - name: Package build tree

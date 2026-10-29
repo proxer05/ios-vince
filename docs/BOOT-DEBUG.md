@@ -107,7 +107,7 @@ Useful filesystem paths:
 - `/private/var/log/com.apple.xpc.launchd/launchd.log*`
 
 **Correction:** VINCE does not use SWEET's persistent UFS console logger.
-Patch 0092 defines a separate 1 MiB `vince_conlog` RAM ring in
+Patch 0092 defines a separate `vince_conlog` RAM ring (expanded to 8 MiB by 0177) in
 `osfmk/console/serial_console.c`. SWEET's 4 MiB disk ring in `sweet_ufs.c`
 does not flush this ring on `rd=mmcroot0`. Both userdata-tail reads lacked
 `SWEETLOG`; pstore contained the previous recovery's Linux log, not XNU.
@@ -157,3 +157,53 @@ treats `*daisy*` patches as critical, and CI verifies the stand-in path and
 diagnostic string in the built kernel. Local replay of the rootfix patches
 through 0183 passes; the recovered launchd cache has exactly one matching
 20-character bluetoothd string with binary-plist prefix `5f 10 14`.
+
+## Opt-in eMMC console logging (0190)
+
+Patch `0190-daisy-emmc-console-log.patch` adds `daisylog=1`, requiring the
+existing `cpus=1 mmcrw=1` boot configuration. After root mount, a kernel worker
+replays the 8 MiB console RAM ring into `/private/var/log/daisy-console.log`
+and follows new output. It captures kernel and user writes routed through the
+VINCE console, including the early touch/RPM diagnostics still in the ring.
+
+- Disabled by default; enable by adding `daisylog=1` to `PAYLOAD_CMDLINE`.
+- File mode 0600; starts with `# DAISY EMMCLOG v1`. Each logging-enabled boot
+  replaces the previous logger file. Extract it before another such boot.
+- Copies at most 16 KiB under the console lock with interrupts masked; disk
+  I/O runs after releasing both. The snapshot requires single-CPU operation.
+- Synchronous writes; fsync after each bounded 1 MiB batch, following new
+  output every second once caught up. Stops on I/O failure or a 32 MiB limit.
+- Explicit markers report overwritten RAM bytes and the file-size limit.
+- This needs a mounted, writable HFS root. A crash before mount cannot be
+  saved; output since the last completed flush can be missing after reset.
+  The existing MMC cache-sync ioctl is a no-op, so this is not a guarantee
+  against sudden power loss.
+
+No root-image rebuild is needed. After running the logging kernel for at
+least 60 seconds, enter fastboot with the buttons and temporarily boot TWRP:
+
+```sh
+fastboot -s 6790a29e0305 boot /smb/twrp-3.7.1_12-daisy-20260424-1114.img
+python3 tools/pull_daisy_console.py artifacts/console-0190.log --serial 6790a29e0305
+```
+
+The pull tool uses the existing ARM64 static SleuthKit binaries in
+`artifacts/tsk-build/sleuthkit-4.12.1/tools/fstools`. It walks the HFS catalog
+and streams only this file from `userdata` without mounting the filesystem.
+An existing local output is never overwritten. `--device /dev/block/mmcblk0p60`
+can select this handset's partition explicitly if the by-name link is absent.
+
+GCC and Clang sanitizer tests (`tools/tests/test_daisy_log.py`) cover early
+replay, wrap/loss, opt-in selectors, console-lock/I/O separation, existing-file
+guards, short/failed writes, flush failures, and the size cap. Device persistence
+and extraction still require a logging-enabled boot followed by recovery.
+
+## Upstream GPU refresh accompanying 0190
+
+Merged `arabaci0711-ux/ios-vince` through
+`401873c2facdbb618c87ccc93ff479472884269a`: `f2feeae`, `f774439`, `c713cbe`,
+and the build-trigger commit. Upstream extends 0181 with `VinceGPU` and its
+IOUserClient, GEM-style buffers, submissions, fences, parameter queries, and
+the physical-address compile fixes. The service starts after successful
+Adreno step 11; the existing `gpu=1`/`adreno=` bring-up selectors control it.
+This imports the upstream interface; Daisy GPU execution remains unvalidated.
