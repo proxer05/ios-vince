@@ -247,7 +247,7 @@ patch 0138 adds an empty stub to avoid the startup delay).
 
 1. **Kernel memory/interface for Mesa.** Allocate GEM buffers physically
    contiguous below 4 GiB (the SMMU is in pass-through after ZAP), fix the
-   ring accounting to the actual 32 KiB, initialize the fence scratch word,
+   full 32 KiB ring clear (indices already count 8,192 dwords), initialize the fence scratch word,
    add explicit cache maintenance for CPU-written buffers, and return
    `MSM_INFO_GET_FLAGS`. Then add selector `0x7e` (`surfaceBuffer`) plus
    `SweetSurface` contiguous surfaces and client-memory mapping for
@@ -269,3 +269,38 @@ patch 0138 adds an empty stub to avoid the startup delay).
 The `gpu-userland` workflow
 (`.github/workflows/gpu-userland.yml`) builds the Mesa and eagl stack on
 macOS and uploads the `gpu-stack` artifact for deployment.
+
+## Kernel memory patch — 0195
+
+`0195-daisy-gpu-contiguous-gem.patch` adds the first Mesa-facing memory
+changes. Hardware validation is pending:
+
+- GEM allocations are physically contiguous, WC, and below 4 GiB. The
+  driver checks the complete physical segment with `kIOMemoryMapperNone`,
+  bounds sizes before rounding, and publishes handles under the GPU lock.
+- The full 32 KiB ring is cleared, and fence scratch starts at zero.
+  **Correction to the initial audit:** `rb_wptr` and `CP_RB_RPTR` count
+  dwords; their original 8,192-entry wrap was already correct.
+- CPU buffers receive real A53 PoC cache maintenance and store barriers.
+  Completion uses A5xx `CACHE_FLUSH_TS`, with per-buffer fences for CPU
+  access and release. Diagnostic waits are bounded to two seconds; memory
+  still used by a stalled GPU is retained on client teardown until reboot.
+- `MSM_INFO_GET_FLAGS` reports the actual WC flags; `SET_NAME` is accepted.
+  VA parameter IDs are corrected to `0x0e`/`0x0f`, and the highest bank bit
+  is reported as 14. Step 6 now reads interrupt status at byte `0x1384`.
+- Submissions validate buffer handles, bounds, request sizes, and unsupported
+  synchronization modes. IB targets are not executed twice. Up to 64
+  command buffers are accepted per submission.
+
+The opt-in `daisygpu_test=1` test runs after step 11, before registration.
+It allocates four pages using the GEM allocator, places an indirect command
+buffer across a page boundary, and asks the GPU to write `0xc0ffee03` to the
+allocation's last word. Success requires both the value and a completed
+cache-flush fence. Look for `VinceGPU: memory test ... PASS`. On failure the
+service is not registered. This test needs `adreno=11` or `gpu=1`; it is
+disabled by default. Initialization still precedes the filesystem logger.
+
+The first 0195 image should retain the reference `adreno=11`, single-core,
+logging-enabled diagnostic arguments and add `daisygpu_test=1`, using the
+embedded PFP. After collecting its result, the remaining integration is
+selector `0x7e`, contiguous IOSurfaces, and deployed Mesa rendering tests.

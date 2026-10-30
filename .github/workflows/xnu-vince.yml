@@ -96,6 +96,9 @@ jobs:
               b'daisylog', b'DAISY EMMCLOG: saving console', b'# DAISY EMMCLOG v1',
               b'/private/var/log/daisy-console.log',
               b'VinceGPU: service started and registered', b'VinceGPUUserClient',
+              b'VinceGPU: Daisy GEM v1: contiguous DMA32, WC, cache-flush fences',
+              b'daisygpu_test', b'VinceGPU: memory test PA=',
+              b'adreno: step 8: cleared 32 KiB ring and initialized fence scratch',
           ):
               if marker not in data:
                   raise SystemExit(f'{kernel}: missing daisy fix marker {marker!r}')
