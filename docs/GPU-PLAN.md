@@ -1,23 +1,30 @@
 # Daisy Adreno 506 bring-up
 
-## Current status — 2026-10-29
+## Current status — 2026-10-30
 
 The user considers touch sufficient for navigation and has asked to focus on
 GPU acceleration. Preserve `artifacts/daisy-touch-hid-0194-smp/daisy-boot.img`
 as the navigable baseline (SHA-256
 `a6678e5576c3376c4424704c10d65aab7fbe13c7aca7546fe49cea12a9c75fc1`).
 
-The imported `0181-vince-adreno-506-bringup.patch` contains hardware startup
-steps and a `VinceGPU` IOKit command-submission service. It is compiled into
-the current VINCE kernel, but hardware execution on Daisy is unvalidated.
-Its `gpu=1` selector requests all eleven steps; `adreno=N` stops after step N.
-Both are opt-in. A successful command-processor test would establish the
-foundation for acceleration; SpringBoard still needs a working rendering path.
+**The full Adreno 506 bring-up now passes on Daisy.** The `adreno=11` image
+booted to SpringBoard, and its persistent log records all eleven steps
+succeeding, including the ZAP/PIL 13 path and a post-ZAP command-processor
+write. `VinceGPU` registered, touch and keys worked, and there was no panic.
+See [Hardware result — 2026-10-30](#hardware-result--2026-10-30) for the
+evidence and the revised remaining path.
 
-**First GPU diagnostic temporarily booted:**
-`artifacts/daisy-gpu-regs-0194/daisy-boot.img`, with `adreno=6`. This checks
-power, clocks, the TrustZone restore call and GPU register access. The
-hardware result and its persistent log are pending.
+The earlier `adreno=6` image produced no persistent log, but the user
+confirmed that image also reached the UI; the missing file was a
+logger/filesystem problem, not a step-6 abort. The `adreno=5` image also
+reached the lockscreen.
+
+The imported `0181-vince-adreno-506-bringup.patch` contains the hardware
+startup steps and the `VinceGPU` IOKit command-submission service. Its
+`gpu=1` selector requests all eleven steps; `adreno=N` stops after step N.
+Both are opt-in. The current gap is the rendering path: the GPU userland
+stack is imported but only the injectors are deployed, and the kernel's
+buffer/IOSurface interface is still the minimal 0181 version.
 
 ## Recovery evidence
 
@@ -78,7 +85,10 @@ The native ZAP ELF has one relocatable `PT_LOAD` segment: physical address
 `0x5000`, file/memory size `0x1444`, flags `0x08000007`. Metadata and the
 segment match the embedded blobs. `b00`/`b01` are preserved alongside them.
 
-## First test: steps 1–6 on the existing 0194 kernel
+## First test: steps 1–6 on the existing 0194 kernel (historical)
+
+> This was the first step-6 probe. The full eleven-step result is in
+> [Hardware result — 2026-10-30](#hardware-result--2026-10-30).
 
 This reuses CI [40964379162](https://github.com/proxer05/ios-vince/actions/runs/40964379162)
 and `MACHINE_CONFIG=VINCE`; no kernel changes were needed for the first test.
@@ -129,7 +139,9 @@ The GPU initializer is synchronous inside `vince_input_start()`. An early
 abort may precede the filesystem logger; if no fresh log survives, move the
 diagnostic behind a delayed logged worker for the next build.
 
-## Remaining path to acceleration
+## Remaining path to acceleration (2026-10-29, historical)
+
+> Superseded by the 2026-10-30 result and revised path below.
 
 1. **Register access:** collect the current hardware result. Correct the
    step-6 interrupt offset and make clock/SCM/readback failures explicit
@@ -177,3 +189,83 @@ diagnostic behind a delayed logged worker for the next build.
   and blit reference. Its README explicitly says shaders and CoreAnimation
   through Metal are unfinished; it is not a ready-made SpringBoard renderer.
   The reported hardware checks are on Adreno 642L, not this Adreno 506.
+
+## Hardware result — 2026-10-30
+
+Image: `artifacts/daisy-gpu-regs11-0194/daisy-boot.img` (17,944,576 bytes,
+SHA-256 `7f383a4f4de91e83ae1c4b6662f45c1eb6ada5764fb28cd0b65ea83290956968`),
+built from kernel 0194 with `adreno=11`, `cpus=1`, `daisylog=1`, and the
+filtered touch/HID path. Log:
+`artifacts/console-gpu-regs11-0194.log` (312,553 bytes, SHA-256
+`2e61319047781b6e796825b96aa92f41f582c85aa54356a8f6272cc74edf7bd7`),
+extracted from `/private/var/log/daisy-console.log` with
+`tools/pull_daisy_console.py`.
+
+The relevant lines are:
+
+```text
+VINCE ADRENO 506: starting steps 1 to 11 (skip mask 0, pause 0 ms)
+adreno: step 6: restore_sec_cfg(18, 0) -> ret=0 ans=0
+adreno: step 6: RBBM_AHB_CNTL0=0x1 RBBM_STATUS=0x1 STATUS3=0 INT0=0 VBIF_VER=0x200d0000
+adreno: step 6: GPU register space readable (VBIF_VERSION should be 0x200d0000)
+adreno: step 8: ME running, RBBM_STATUS=0x1 INT0=0 CP_HW_FAULT=0
+adreno: step 9: CP_MEM_WRITE -> 0xc0ffee01 (the GPU executed its first command), RPTR=13
+adreno: step 10: secure ptbl size ret=0 size=0x21000
+adreno: step 10: secure ptbl init at 0x47900000 ret=0
+adreno: step 10: init_image ret=0
+adreno: step 10: mem_setup(0x95000000, 0x2000) ret=0
+adreno: step 10: auth_and_reset ret=0 ans=0
+adreno: step 10: zap loaded, GPU out of secure mode
+adreno: step 11: post-zap CP_MEM_WRITE -> 0xc0ffee02; RBBM_STATUS=0x1 INT0=0 RPTR=19
+adreno: step 11: Adreno 506 command processor is up (ring at PA 0x47820000)
+VinceGPU: service started and registered
+VINCE ADRENO: step 11 SUCCESS
+VINCE ADRENO 506: bringup sequence finished
+```
+
+The boot then reached SpringBoard; the log records touch/button activity
+(`VINCE INPUT`, `SWEET HID`, `DAISY HID`) and no panic. This validates the
+`0x47800000` GPU scratch, the `0x95000000` ZAP region, TZ restore, PIL 13,
+and basic command execution on Daisy. The embedded vince PFP (16,820 bytes)
+was sufficient for `CP_ME_INIT`, `CP_SET_SECURE_MODE`, and the scratch
+writes; the native Daisy PFP remains untested for full draws.
+
+The step-6 `INT0` label still reads the wrong byte offset (`0xf8` instead of
+`0x1384`), so that field is not the interrupt status; the other step-6
+offsets match the vendor header. It did not affect the result.
+
+### Userland state
+
+`/daisy/lib` contains `libdaisy-inject.dylib` and `libtopaz-inject.dylib`,
+but **not** `libdaisy-gl.dylib` or `libOSMesa.8.dylib`. The log shows
+`/usr/libexec/real/backboardd`, so the wrapper is installed and the real
+window server is running. No `redwood-gl`/freedreno activity appears, and
+`IOAcceleratorES` is absent, so backboardd repeatedly matches it (topaz
+patch 0138 adds an empty stub to avoid the startup delay).
+
+### Revised remaining path
+
+1. **Kernel memory/interface for Mesa.** Allocate GEM buffers physically
+   contiguous below 4 GiB (the SMMU is in pass-through after ZAP), fix the
+   ring accounting to the actual 32 KiB, initialize the fence scratch word,
+   add explicit cache maintenance for CPU-written buffers, and return
+   `MSM_INFO_GET_FLAGS`. Then add selector `0x7e` (`surfaceBuffer`) plus
+   `SweetSurface` contiguous surfaces and client-memory mapping for
+   zero-copy IOSurfaces.
+2. **Build and deploy the userland stack.** Build Mesa 25.0.7
+   (freedreno + softpipe), `eagl_gen.h`, `libdaisy-gl.dylib`, and
+   `libOSMesa.8.dylib`; deploy them to `/daisy/lib`. Test first with
+   `FD_MESA_DEBUG=sysmem`/softpipe, then with freedreno.
+3. **CoreAnimation presentation.** Implement IOSurface sharing, cache
+   coherency, the surface drawn/fence protocol, the `IOAcceleratorES` stub,
+   and the backboardd jetsam exemption.
+4. **Firmware.** Keep the embedded PFP for the validated
+   `CP_ME_INIT`/ZAP path; test the native Daisy PFP in a separately
+   identified build for full draws.
+5. **Interactive validation.** Return to the eight-core, logging-disabled
+   touch baseline with the validated GPU path enabled; verify rendered
+   output, navigation and frame timing.
+
+The `gpu-userland` workflow
+(`.github/workflows/gpu-userland.yml`) builds the Mesa and eagl stack on
+macOS and uploads the `gpu-stack` artifact for deployment.
