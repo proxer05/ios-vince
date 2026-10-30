@@ -14,6 +14,12 @@ write. `VinceGPU` registered, touch and keys worked, and there was no panic.
 See [Hardware result — 2026-10-30](#hardware-result--2026-10-30) for the
 evidence and the revised remaining path.
 
+**0195 also passes the allocator-backed GPU memory test.** The user
+confirmed a homescreen boot. The recovered log shows an indirect command
+buffer crossing a page boundary, a write to the last word of a 16 KiB
+allocation at `0xa3ff3000`, and completed cache-flush fence 1. See
+[Kernel memory patch — 0195](#kernel-memory-patch--0195).
+
 The earlier `adreno=6` image produced no persistent log, but the user
 confirmed that image also reached the UI; the missing file was a
 logger/filesystem problem, not a step-6 abort. The `adreno=5` image also
@@ -23,8 +29,9 @@ The imported `0181-vince-adreno-506-bringup.patch` contains the hardware
 startup steps and the `VinceGPU` IOKit command-submission service. Its
 `gpu=1` selector requests all eleven steps; `adreno=N` stops after step N.
 Both are opt-in. The current gap is the rendering path: the GPU userland
-stack is imported but only the injectors are deployed, and the kernel's
-buffer/IOSurface interface is still the minimal 0181 version.
+stack builds in CI but only the injectors are deployed. Patch 0195 adds
+contiguous GEM and cache/fence handling; IOSurface selector `0x7e` and
+end-to-end Mesa rendering are still pending.
 
 ## Recovery evidence
 
@@ -275,7 +282,7 @@ macOS and uploads the `gpu-stack` artifact for deployment.
 `0195-daisy-gpu-contiguous-gem.patch` adds the first Mesa-facing memory
 changes. The VINCE kernel build passed in
 [run 41096208142](https://github.com/proxer05/ios-vince/actions/runs/41096208142)
-from commit `5252f1a`. Hardware validation is pending:
+from commit `5252f1a`. The opt-in memory test passed on hardware:
 
 - GEM allocations are physically contiguous, WC, and below 4 GiB. The
   driver checks the complete physical segment with `kIOMemoryMapperNone`,
@@ -304,8 +311,8 @@ disabled by default. Initialization still precedes the filesystem logger.
 
 The first 0195 image retains the reference `adreno=11`, single-core,
 logging-enabled diagnostic arguments and adds `daisygpu_test=1`, using the
-embedded PFP. It was sent successfully with `fastboot boot` on 2026-10-30;
-the screen result and persistent log have not yet been collected.
+embedded PFP. It was sent successfully with `fastboot boot` on 2026-10-30.
+The user confirmed it reached the homescreen, then returned to fastboot.
 
 - Kernel: `artifacts/kernel-0195/kernel.development.vince`, SHA-256
   `d59fc5912a63405093e047439d85cf482ad5ccb0bf0b819ef5c84a9a730831da`.
@@ -314,7 +321,7 @@ the screen result and persistent log have not yet been collected.
 - Packaging verified: shim and appended Daisy DTBs match the 0194 reference;
   `second` is empty. ADT properties match except for a fresh random seed.
 
-After observing this boot, return the phone to fastboot and collect the log:
+The log was collected after temporarily booting the requested TWRP image:
 
 ```sh
 fastboot -s 6790a29e0305 boot /smb/twrp-3.7.1_12-daisy-20260715-2011.img
@@ -322,5 +329,19 @@ adb -s 6790a29e0305 wait-for-recovery
 python3 tools/pull_daisy_console.py artifacts/console-gpu-memory-0195.log --serial 6790a29e0305
 ```
 
-After collecting its result, the remaining integration is selector `0x7e`,
-contiguous IOSurfaces, and deployed Mesa rendering tests.
+Log: `artifacts/console-gpu-memory-0195.log`, 310,192 bytes, SHA-256
+`922f5b978d4c8f3157fff8072b3158542b49c307b7ee392d8eecf6d92d513420`.
+It contains all eleven startup successes and:
+
+```text
+adreno: step 8: cleared 32 KiB ring and initialized fence scratch
+VinceGPU: memory test PA=0xa3ff3000 bytes=16384 fence=1 done=1 value=0xc0ffee03 PASS
+VinceGPU: service started and registered
+VinceGPU: Daisy GEM v1: contiguous DMA32, WC, cache-flush fences
+```
+
+This validates command fetch and a GPU write outside the startup carveout,
+through the allocator-backed physical span, plus cache-flush fence completion
+with the embedded PFP. No panic appears in the recovered log. Userland GEM
+ioctls, full draws, and presentation remain untested. The next integration is
+selector `0x7e`, contiguous IOSurfaces, and deployed Mesa rendering tests.
