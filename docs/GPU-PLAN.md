@@ -273,7 +273,9 @@ macOS and uploads the `gpu-stack` artifact for deployment.
 ## Kernel memory patch — 0195
 
 `0195-daisy-gpu-contiguous-gem.patch` adds the first Mesa-facing memory
-changes. Hardware validation is pending:
+changes. The VINCE kernel build passed in
+[run 41096208142](https://github.com/proxer05/ios-vince/actions/runs/41096208142)
+from commit `5252f1a`. Hardware validation is pending:
 
 - GEM allocations are physically contiguous, WC, and below 4 GiB. The
   driver checks the complete physical segment with `kIOMemoryMapperNone`,
@@ -300,7 +302,25 @@ cache-flush fence. Look for `VinceGPU: memory test ... PASS`. On failure the
 service is not registered. This test needs `adreno=11` or `gpu=1`; it is
 disabled by default. Initialization still precedes the filesystem logger.
 
-The first 0195 image should retain the reference `adreno=11`, single-core,
-logging-enabled diagnostic arguments and add `daisygpu_test=1`, using the
-embedded PFP. After collecting its result, the remaining integration is
-selector `0x7e`, contiguous IOSurfaces, and deployed Mesa rendering tests.
+The first 0195 image retains the reference `adreno=11`, single-core,
+logging-enabled diagnostic arguments and adds `daisygpu_test=1`, using the
+embedded PFP. It was sent successfully with `fastboot boot` on 2026-10-30;
+the screen result and persistent log have not yet been collected.
+
+- Kernel: `artifacts/kernel-0195/kernel.development.vince`, SHA-256
+  `d59fc5912a63405093e047439d85cf482ad5ccb0bf0b819ef5c84a9a730831da`.
+- Image: `artifacts/daisy-gpu-memory-0195/daisy-boot.img`, 17,944,576 bytes,
+  SHA-256 `b8217743a107a23b4af805d57cfdb641a633d5c6da5a00a5e7ef12698ea993e2`.
+- Packaging verified: shim and appended Daisy DTBs match the 0194 reference;
+  `second` is empty. ADT properties match except for a fresh random seed.
+
+After observing this boot, return the phone to fastboot and collect the log:
+
+```sh
+fastboot -s 6790a29e0305 boot /smb/twrp-3.7.1_12-daisy-20260715-2011.img
+adb -s 6790a29e0305 wait-for-recovery
+python3 tools/pull_daisy_console.py artifacts/console-gpu-memory-0195.log --serial 6790a29e0305
+```
+
+After collecting its result, the remaining integration is selector `0x7e`,
+contiguous IOSurfaces, and deployed Mesa rendering tests.
