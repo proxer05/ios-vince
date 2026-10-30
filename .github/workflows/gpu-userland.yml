@@ -1,0 +1,93 @@
+name: gpu-userland
+
+# Build the complete Daisy GPU userland stack on macOS:
+#   Mesa 25.0.7 (freedreno + softpipe) -> libOSMesa.8.dylib
+#   eagl_gen.h -> libdaisy-gl.dylib
+#   bbd_wrap + libdaisy-inject.dylib (+ the topaz reference injector)
+#
+# The artifact "gpu-stack" is ready to copy to /daisy/lib (and bbd_wrap to
+# /usr/libexec/backboardd after moving the real one aside).
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, daisy-boot]
+    paths:
+      - "userland/gpu/**"
+      - "userland/mesa/**"
+      - "userland/ent.plist"
+      - ".github/workflows/gpu-userland.yml"
+
+concurrency:
+  group: gpu-userland-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  gpu-stack:
+    runs-on: macos-14
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          set -e
+          brew install bison meson ninja
+          echo "/opt/homebrew/opt/bison/bin" >> "$GITHUB_PATH"
+          xcrun --sdk iphoneos --show-sdk-path
+          xcrun --sdk iphoneos clang --version
+          meson --version
+          ninja --version
+
+      - name: Build Mesa (freedreno + softpipe)
+        run: |
+          set -e
+          cd userland/mesa
+          PREFIX=/daisy ./mk-mesa-mac.sh
+
+      - name: Build eagl + GPU helpers
+        run: |
+          set -e
+          cd userland/gpu
+          CC="$(xcrun --sdk iphoneos -f clang)"
+          make eagl_gen.h MESA_OUT=../mesa/build-mesa/out
+          make out/libdaisy-gl.dylib MESA_OUT=../mesa/build-mesa/out CC="$CC"
+          make out/bbd_wrap out/libdaisy-inject.dylib CC="$CC"
+          make out/libtopaz-inject.dylib CC="$CC"
+
+      - name: Sign and stage
+        run: |
+          set -e
+          cd "$GITHUB_WORKSPACE"
+          codesign -f -s - userland/mesa/build-mesa/out/libOSMesa.8.dylib
+          mkdir -p out/gpu
+          cp userland/mesa/build-mesa/out/libOSMesa.8.dylib out/gpu/
+          cp userland/gpu/out/libdaisy-gl.dylib out/gpu/
+          cp userland/gpu/out/libdaisy-inject.dylib out/gpu/
+          cp userland/gpu/out/libtopaz-inject.dylib out/gpu/
+          cp userland/gpu/out/bbd_wrap out/gpu/
+          cp userland/gpu/eagl_gen.h out/gpu/
+          (cd out/gpu && shasum -a 256 * > SHA256SUMS)
+          file out/gpu/*
+          ls -l out/gpu
+
+      - name: Upload build logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gpu-build-logs
+          path: |
+            userland/mesa/build-mesa/meson-setup.log
+            userland/mesa/build-mesa/ninja.log
+            userland/gpu/eagl_gen.h
+          if-no-files-found: ignore
+
+      - name: Upload GPU stack
+        uses: actions/upload-artifact@v4
+        with:
+          name: gpu-stack
+          path: out/gpu/
+          if-no-files-found: error

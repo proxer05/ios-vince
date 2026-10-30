@@ -12,3 +12,5 @@ out/
 .DS_Store
 __pycache__/
 *.pyc
+userland/mesa/build-mesa/
+userland/gpu/eagl_gen.h

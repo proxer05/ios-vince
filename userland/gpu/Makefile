@@ -1,7 +1,9 @@
 # Makefile for Daisy GPU userland components
 # Target: iOS 16 arm64 (iPhone X / A11 ABI)
 
-CC ?= xcrun --sdk iphoneos clang
+ifeq ($(origin CC),default)
+CC := xcrun --sdk iphoneos clang
+endif
 ARCH ?= arm64
 MIN_IOS ?= 16.0
 SDK_PATH ?= $(shell xcrun --sdk iphoneos --show-sdk-path 2>/dev/null)
