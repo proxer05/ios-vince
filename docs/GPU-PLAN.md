@@ -777,3 +777,38 @@ exhaustion because GEM and surfaces now share its 256 MiB. Keep clock and
 eight-core tests for after this comparison. Current editable XNU is
 `artifacts/daisy-0200-work/xnu/`; 0200 changes are exported in the committed
 patch, on top of its local `3d19c7c` verified 0199 baseline.
+
+### 0200 hardware result and 0201 correction
+
+The user reported that 0200 was not smoother and that the app-switcher blur
+no longer rendered. The recovered console
+(`artifacts/console-gpu-shared-0200-20261031.log`, 474,293 bytes, SHA-256
+`a4a9d2191a1fee55def25f7b6a9f1bada79fe2edbf08b94a1abdc571033ce55b`)
+shows the managed-pool mapping fix worked: no `IOMemoryDescriptor physical
+with managed page` backtraces, the pool v2 marker, memory-test PASS, and
+successful imports (`import surface=2 ... bpr=4608`).
+
+The shared reserve then exhausted: `GEM pool exhausted request=11227136
+used=216512 KiB ... largest=10840 KiB`, followed by repeated
+`DMA allocation failed; cached copy fallback`. Surfaces and GEM were
+competing for the same 256 MiB, and 11.2 MiB surface spans fragmented the
+reserve. The frame lines changed from `1 drawn in place` to `1 picture
+copied out`, and later frames still averaged about 170-200 ms copying out.
+The app-switcher blur was absent even though the vblur shaders compiled and
+the levels were made. The unified log for the 0200 boot
+(`D41B0A7A28494B18A911ED50975DAD92`) shows why: after the surface failures,
+texture creation begins failing with `glTexImage2D: error 0x505`
+(`GL_OUT_OF_MEMORY`), followed by `glDrawElements: error 0x506`
+(`GL_INVALID_FRAMEBUFFER_OPERATION`) and `glFlush: error 0x506`. The shared
+reserve left no room for the blur's intermediate textures, so the effect had
+nothing to read. The 0199 log never exercised the variable-radius path, so
+the blur regression is pool pressure, not a new shader fault.
+
+`0201-daisy-gpu-surface-dma-opt-in.patch` makes shared surface memory
+opt-in (`daisysurface_dma=1`). The default is the validated cached-copy
+path, leaving the reserve for GEM only. The next image also adds
+`glfetch=0`, so the bridge does not attempt its A6xx-only
+framebuffer-fetch shaders and CoreAnimation uses its own fallback. This
+should restore the 0199 blur and remove the two `0x502` errors. The
+reserve mapping fix and A506 pitch normalization remain in place.
+
