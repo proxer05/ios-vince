@@ -355,6 +355,11 @@ that `/daisy/lib/libdaisy-inject.dylib`, `libdaisy-gl.dylib`, and
 `libOSMesa.8.dylib` on the phone match the `gpu-stack-5a9a09f` CI artifacts
 byte for byte. Daisy's MAC policy was named `SWEET AMFI` and did not answer
 dyld's policy request, which prevents the intended library insertion.
+The installed `/usr/libexec/backboardd` was also verified against the CI
+wrapper (catalog ID 321391, SHA-256
+`9b9875452ccbdae82271e70c7925d9c3048b4a35e0a25043d7a1cf12110f98d5`);
+`/usr/libexec/real/backboardd` is present. Direct catalog lookup was needed
+because SleuthKit fails while enumerating an unrelated entry in `libexec`.
 
 Cross-references checked against fresh upstream checkouts on 2026-10-31:
 
@@ -393,5 +398,30 @@ Both patches apply cleanly in sequence to the successful 0195 CI sources.
 A host compiler check confirms all eleven msm request layouts against
 `hakios-metal` and every surface-field offset against the deployed Mesa
 bridge. The VINCE CI marker check now requires AMFI, accelerator discovery,
-and IOSurface import code in the linked kernel. Kernel build and hardware
-rendering validation are pending; no rendered frame is claimed yet.
+and IOSurface import code in the linked kernel.
+
+The `MACHINE_CONFIG=VINCE` build passed in
+[run 41150040430](https://github.com/proxer05/ios-vince/actions/runs/41150040430)
+at `bb13d17`, including those linked-kernel checks:
+
+- Kernel: `artifacts/kernel-0197/kernel.development.vince`, SHA-256
+  `647b0cf5268dd4d4d938aa70ec2a3aea305022ac077dd7517c979d0292aa8d9a`.
+- Temporary-boot image: `artifacts/daisy-gpu-userland-0197/daisy-boot.img`,
+  17,948,672 bytes, SHA-256
+  `431e933a1a9c757085e7ad7f218f68ccc61c4db4f2b945ceedd256cf0aaf183d`.
+- Packaging verification passed: boot header/digest, appended Daisy DTBs,
+  empty `second`, payload geometry, and embedded kernel markers. Shim,
+  diagnostic arguments (`cpus=1 daisylog=1 adreno=11 daisygpu_test=1`), and
+  ADT properties match 0195 except the fresh random seed. Rebuilding this
+  configuration requires `VINCE_NO_FBCON=1`.
+
+The image is ready for temporary boot; it has not yet been tested on the
+phone. Hardware rendering validation remains pending.
+
+```sh
+fastboot -s 6790a29e0305 boot artifacts/daisy-gpu-userland-0197/daisy-boot.img
+```
+
+The next recovered log should show the backboardd dyld-policy reply, then
+injector/EAGL startup, the GPU user-client open, and Mesa submissions. A
+successful 0195-style memory self-test alone does not validate rendering.
