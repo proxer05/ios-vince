@@ -345,3 +345,53 @@ through the allocator-backed physical span, plus cache-flush fence completion
 with the embedded PFP. No panic appears in the recovered log. Userland GEM
 ioctls, full draws, and presentation remain untested. The next integration is
 selector `0x7e`, contiguous IOSurfaces, and deployed Mesa rendering tests.
+
+## Loader and IOSurface port — 0196/0197
+
+The 2026-10-30 userdata boot still selected CoreAnimation's software renderer.
+Its recovered logs contain `amfi_interface_query_bootarg_state returned error
+Policy not found` and no injector/Mesa startup. Recovery extraction verified
+that `/daisy/lib/libdaisy-inject.dylib`, `libdaisy-gl.dylib`, and
+`libOSMesa.8.dylib` on the phone match the `gpu-stack-5a9a09f` CI artifacts
+byte for byte. Daisy's MAC policy was named `SWEET AMFI` and did not answer
+dyld's policy request, which prevents the intended library insertion.
+
+Cross-references checked against fresh upstream checkouts on 2026-10-31:
+
+- [hakios-xnu-kernel](https://github.com/oosexgang/hakios-xnu-kernel/tree/a3384e031eb1e605cf37adaefc19991f04f6274b):
+  `xnu/files/bsd/kern/kern_minimac.c` (AMFI),
+  `drivers/gpu/hakios.gpu.cpp` (surface import, ownership, fences),
+  `xnu/files/iokit/Kernel/MiniIOMobileFramebuffer.cpp` (accelerator discovery),
+  and `tools/mesa/freedreno-darwin.patch` (identical to Daisy's integration
+  after bridge naming is normalized).
+- [hakios-metal](https://github.com/oosexgang/hakios-metal/tree/54a46fadec5bd9684ebd77f3a0834c84b5eb01a6):
+  `include/hakios-metal/gpu.hpp`, `src/gpu.cpp`, and `src/iokit_transport.cpp`
+  confirm the msm request layouts, WC mappings and continuous-clock deadlines.
+  Its current device probe covers command-processor copies/fills and fences
+  on A6xx; its shader path is unfinished. Metal plugin registration is not
+  part of this Mesa/EAGL port.
+
+`0196-daisy-amfi-dyld-gpu-discovery.patch` registers the exact policy name
+`AMFI`, answers `0x5a` with dyld flags `0xff` and `0x60` with non-enforcing
+state `0x86`, and preserves errors for unknown requests. A backboardd exec
+logs the dyld reply. The successful, opt-in `VinceGPU` startup also publishes
+the `IOAcceleratorES` discovery stub.
+
+`0197-daisy-gpu-iosurface-import.patch` adds the deployed bridge's 40-byte
+selector `0x7e` ABI: describe-only (`handle=0xffffffff`) and retained GEM
+imports with stable handles on repeat import. Newly created surfaces use
+the validated DMA32/WC GEM allocator after GPU service startup. Imports
+reject cached, fragmented and out-of-aperture buffers; the surface state
+page is separate and is never exposed through a GEM mapping. Surface and
+memory references survive until the GPU is done, including client teardown.
+Per-surface fences cover GPU use across clients. IOSurface locks and the
+framebuffer wait before CPU access; WC stores are ordered before seed
+publication. The existing 24-bpp panel conversion remains the presentation
+path, so IOSurface import does not imply zero-copy scanout.
+
+Both patches apply cleanly in sequence to the successful 0195 CI sources.
+A host compiler check confirms all eleven msm request layouts against
+`hakios-metal` and every surface-field offset against the deployed Mesa
+bridge. The VINCE CI marker check now requires AMFI, accelerator discovery,
+and IOSurface import code in the linked kernel. Kernel build and hardware
+rendering validation are pending; no rendered frame is claimed yet.

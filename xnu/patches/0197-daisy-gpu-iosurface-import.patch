@@ -1,0 +1,432 @@
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -429,6 +429,14 @@ AppleCLCD::present(const uint8_t *rec)
+ 			OSSafeReleaseNULL(s);
+ 			continue;
+ 		}
++#if defined(ARM64_BOARD_CONFIG_VINCE)
++		/* A missed frame is preferable to reading an unfinished GPU target.
++		 * Keep the vsync workloop responsive if the GPU stalls. */
++		if (!vince_surface_wait(s, 16)) {
++			s->release();
++			continue;
++		}
++#endif
+ 		uintptr_t src = s->kernelAddress();
+ 		uint32_t bpe = s->bytesPerElement ? s->bytesPerElement : 4;
+ 		if (w <= 0 || h <= 0) {
+diff --git a/iokit/Kernel/arm/SweetSurface.cpp b/iokit/Kernel/arm/SweetSurface.cpp
+--- a/iokit/Kernel/arm/SweetSurface.cpp
++++ b/iokit/Kernel/arm/SweetSurface.cpp
+@@ -249,6 +249,18 @@ sweet_surface_create_physical(uint64_t phys, uint32_t width, uint32_t height,
+ }
+ 
+ #if defined(ARM64_BOARD_CONFIG_VINCE)
++static IOBufferMemoryDescriptor *
++sweet_surface_memory(SweetSurface *s)
++{
++	if (vince_surface_enabled()) {
++		s->mapCache = kIOMapWriteCombineCache;
++		return vince_surface_allocate(s->allocSize);
++	}
++	s->mapCache = kIOMapDefaultCache;
++	return IOBufferMemoryDescriptor::inTaskWithOptions(kernel_task,
++	    kIODirectionInOut | kIOMemoryKernelUserShared, s->allocSize, page_size);
++}
++
+ SweetSurface *
+ sweet_surface_create_buffer(uint32_t width, uint32_t height, uint32_t pixelFormat)
+ {
+@@ -263,8 +275,7 @@ sweet_surface_create_buffer(uint32_t width, uint32_t height, uint32_t pixelForma
+ 	s->elementWidth = s->elementHeight = 1;
+ 	s->pixelFormat = pixelFormat;
+ 	s->allocSize = (uint32_t)round_page(s->bytesPerRow * height);
+-	IOBufferMemoryDescriptor *mem = IOBufferMemoryDescriptor::inTaskWithOptions(kernel_task,
+-	    kIODirectionInOut | kIOMemoryKernelUserShared, s->allocSize, page_size);
++	IOBufferMemoryDescriptor *mem = sweet_surface_memory(s);
+ 	if (mem == NULL) {
+ 		s->release();
+ 		return NULL;
+@@ -272,7 +283,6 @@ sweet_surface_create_buffer(uint32_t width, uint32_t height, uint32_t pixelForma
+ 	OSAddAtomic64(s->allocSize, (volatile SInt64 *)&sweet_surface_wired);   /* free() takes it back */
+ 	bzero(mem->getBytesNoCopy(), s->allocSize);
+ 	s->memory = mem;
+-	s->mapCache = kIOMapDefaultCache;
+ 	if (!sweet_surface_publish(s)) {
+ 		s->release();
+ 		return NULL;
+@@ -721,8 +731,13 @@ IOSurfaceRootUserClient::create(IOExternalMethodArguments *args)
+ 		IOBufferMemoryDescriptor *mem = NULL;
+ 		if ((uint64_t)OSAddAtomic64(s->allocSize, (volatile SInt64 *)&sweet_surface_wired) +
+ 		    s->allocSize <= SWEET_SURFACE_WIRED_MAX) {
++#if defined(ARM64_BOARD_CONFIG_VINCE)
++			mem = sweet_surface_memory(s);
++#else
+ 			mem = IOBufferMemoryDescriptor::inTaskWithOptions(kernel_task,
+ 			    kIODirectionInOut | kIOMemoryKernelUserShared, s->allocSize, page_size);
++			s->mapCache = kIOMapDefaultCache;
++#endif
+ 		}
+ 		if (mem == NULL) {
+ 			OSAddAtomic64(-(SInt64)s->allocSize, (volatile SInt64 *)&sweet_surface_wired);
+@@ -730,7 +745,6 @@ IOSurfaceRootUserClient::create(IOExternalMethodArguments *args)
+ 		} else {
+ 			bzero(mem->getBytesNoCopy(), s->allocSize);
+ 			s->memory = mem;
+-			s->mapCache = kIOMapDefaultCache;
+ 			if (!sweet_surface_publish(s)) {
+ 				ret = kIOReturnNoResources;
+ 			}
+@@ -862,6 +876,13 @@ IOSurfaceRootUserClient::trapLock(void *id, __unused void *options, void *seedOu
+ 	if (s == NULL) {
+ 		return kIOReturnNotFound;
+ 	}
++#if defined(ARM64_BOARD_CONFIG_VINCE)
++	/* kIOSurfaceLockAvoidSync (2): poll rather than wait. */
++	if (!vince_surface_wait(s, ((uintptr_t)options & 2) ? 0 : 2000)) {
++		s->release();
++		return kIOReturnBusy;
++	}
++#endif
+ 	IOReturn ret = sweet_surface_seed_out(s, seedOut, false);
+ 	s->release();
+ 	return ret;
+@@ -875,6 +896,9 @@ IOSurfaceRootUserClient::trapUnlock(void *id, void *options, void *seedOut,
+ 	if (s == NULL) {
+ 		return kIOReturnNotFound;
+ 	}
++	/* Publish CPU stores before publishing the new surface seed. DMA-backed
++	 * surfaces have WC mappings in every task, including this kernel. */
++	__asm__ volatile("dsb sy" ::: "memory");
+ 	IOReturn ret = sweet_surface_seed_out(s, seedOut,
+ 	    !((uintptr_t)options & kIOSurfaceLockReadOnly));
+ 	s->release();
+diff --git a/iokit/Kernel/arm/SweetSurface.h b/iokit/Kernel/arm/SweetSurface.h
+--- a/iokit/Kernel/arm/SweetSurface.h
++++ b/iokit/Kernel/arm/SweetSurface.h
+@@ -39,6 +39,9 @@ public:
+ 	IOOptionBits              mapCache;     /* cache mode for user mappings */
+ 	IOBufferMemoryDescriptor *state;        /* shared state page, read-only for users */
+ 	IOMemoryMap              *kernelMap;    /* lazily created for kernel copies */
++#if defined(ARM64_BOARD_CONFIG_VINCE)
++	uint32_t gpuFence;                     /* latest GPU access; protected by gGPULock */
++#endif
+ 
+ 	bool init() APPLE_KEXT_OVERRIDE { return OSObject::init(); }
+ 	void free() APPLE_KEXT_OVERRIDE;
+@@ -63,10 +66,16 @@ mach_port_name_t sweet_surface_port_in_task(SweetSurface *surface, task_t task);
+ 
+ #if defined(ARM64_BOARD_CONFIG_VINCE)
+ /*
+- * A surface over a new zeroed kernel buffer (cached, like the surfaces userland creates): VINCE's 32-bpp shadow of
++ * A surface over a new zeroed kernel buffer: VINCE's 32-bpp shadow of
+  * its 24-bpp panel (SweetFramebuffer.cpp). Retained; stays in the id table like sweet_surface_create_physical's.
+  */
+ SweetSurface *sweet_surface_create_buffer(uint32_t width, uint32_t height, uint32_t pixelFormat);
++
++/* GPU-enabled surfaces use the same contiguous DMA32/WC allocator as GEM.
++ * Wait before CPU access, including the framebuffer's presentation copy. */
++bool vince_surface_enabled(void);
++IOBufferMemoryDescriptor *vince_surface_allocate(uint32_t size);
++bool vince_surface_wait(SweetSurface *surface, uint32_t milliseconds);
+ #endif
+ 
+ #endif /* SWEET */
+diff --git a/iokit/Kernel/arm/VinceGPU.cpp b/iokit/Kernel/arm/VinceGPU.cpp
+--- a/iokit/Kernel/arm/VinceGPU.cpp
++++ b/iokit/Kernel/arm/VinceGPU.cpp
+@@ -17,6 +17,7 @@
+ #include <mach/vm_param.h>
+ #include <sys/systm.h>
+ #include <pexpert/pexpert.h>
++#include "SweetSurface.h"
+ 
+ extern "C" {
+ void FlushPoC_DcacheRegion(vm_offset_t va, unsigned length);
+@@ -44,6 +45,7 @@ enum {
+ 	kMsmSubmitQueueNew      = 0x4a,
+ 	kMsmSubmitQueueClose    = 0x4b,
+ 	kMsmSubmitQueueQuery    = 0x4c,
++	kVinceSurface          = 0x7e,
+ };
+ 
+ struct msm_timespec {
+@@ -105,6 +107,14 @@ struct drm_gem_close {
+ 	uint32_t handle, pad;
+ };
+ 
++/* Matches redwood_drm_surface in the deployed Mesa DRM bridge. */
++struct vince_surface {
++	uint32_t surface, handle;
++	uint64_t size;
++	uint32_t offset, row_bytes, width, height, pixel_format, planes;
++};
++static_assert(sizeof(struct vince_surface) == 40, "Mesa surface ABI");
++
+ #define GPU_BUFFERS 1024
+ #define GPU_BUFFER_MAX (256ull << 20)
+ #define GPU_SUBMIT_CMDS 64
+@@ -115,7 +125,8 @@ struct drm_gem_close {
+ #define GPU_WAIT_MS 2000
+ 
+ struct gpu_buffer {
+-	IOBufferMemoryDescriptor *memory;
++	IOMemoryDescriptor *memory;
++	SweetSurface *surface;
+ 	uint8_t *kernel;
+ 	uint64_t address;
+ 	uint64_t size;
+@@ -124,6 +135,13 @@ struct gpu_buffer {
+ };
+ 
+ static IOLock *gGPULock = NULL;
++static bool gGPUSurfaces = false;
++
++bool
++vince_surface_enabled(void)
++{
++	return gGPUSurfaces;
++}
+ 
+ static int64_t
+ millisecondsUntil(const struct msm_timespec *when)
+@@ -162,6 +180,21 @@ gpuWait(uint32_t fence, int64_t patienceMs)
+ 	return true;
+ }
+ 
++bool
++vince_surface_wait(SweetSurface *surface, uint32_t milliseconds)
++{
++	if (gGPULock == NULL) {
++		return true;
++	}
++	IOLockLock(gGPULock);
++	bool done = gpuWait(surface->gpuFence, MIN(milliseconds, GPU_WAIT_MS));
++	/* All mappings of importable surfaces are WC. Order CPU reads after
++	 * CACHE_FLUSH_TS completion, without cleaning stale cached pixels. */
++	__asm__ volatile("dsb sy" ::: "memory");
++	IOLockUnlock(gGPULock);
++	return done;
++}
++
+ /* These are DMA buffers, not Apple-coherent memory. Use the real A53 PoC
+  * operation (flush_dcache can be compiled out by __ARM_COHERENT_CACHE__).
+  * CPU/user mappings are WC; the barrier also drains buffered CPU stores. */
+@@ -199,6 +232,17 @@ gpuAllocate(uint64_t size, uint8_t **kernel, uint64_t *address)
+ 	return memory;
+ }
+ 
++IOBufferMemoryDescriptor *
++vince_surface_allocate(uint32_t size)
++{
++	uint8_t *kernel;
++	uint64_t address;
++	if (!gGPUSurfaces || size == 0 || size > GPU_BUFFER_MAX || (size & PAGE_MASK)) {
++		return NULL;
++	}
++	return gpuAllocate(size, &kernel, &address);
++}
++
+ static bool
+ gpuMemoryTest(void)
+ {
+@@ -270,10 +314,12 @@ VinceGPU::start(IOService *provider)
+ 	}
+ 	setProperty(kIOUserClientClassKey, "VinceGPUUserClient");
+ 	setName("VinceGPU");
++	gGPUSurfaces = true;
+ 	registerService();
+ 	publishAccelerator(this);
+ 	IOLog("VinceGPU: service started and registered\n");
+ 	IOLog("VinceGPU: Daisy GEM v1: contiguous DMA32, WC, cache-flush fences\n");
++	IOLog("VinceGPU: IOSurface v1: selector 0x7e, shared DMA32/WC, surface fences\n");
+ 	return true;
+ }
+ 
+@@ -326,6 +372,7 @@ private:
+ 	struct gpu_buffer *buffer(uint32_t handle);
+ 	IOReturn gemNew(struct msm_gem_new *request);
+ 	IOReturn gemInfo(struct msm_gem_info *request);
++	IOReturn surfaceBuffer(struct vince_surface *request);
+ 	IOReturn submit(struct msm_gem_submit *request);
+ 	void freeBuffer(struct gpu_buffer *b);
+ 
+@@ -334,6 +381,7 @@ private:
+ 	uint32_t fNextBuffer;
+ 	uint32_t fNextQueue;
+ 	uint32_t fSubmits;
++	uint32_t fSurfaces;
+ };
+ 
+ OSDefineMetaClassAndStructors(VinceGPUUserClient, IOUserClient);
+@@ -348,6 +396,7 @@ VinceGPUUserClient::initWithTask(task_t owningTask, void *securityID, UInt32 typ
+ 	fNextBuffer = 0;
+ 	fNextQueue = 0;
+ 	fSubmits = 0;
++	fSurfaces = 0;
+ 	fBuffers = (struct gpu_buffer *)IOMallocZero(sizeof(struct gpu_buffer) * GPU_BUFFERS);
+ 	return fBuffers != NULL;
+ }
+@@ -355,7 +404,11 @@ VinceGPUUserClient::initWithTask(task_t owningTask, void *securityID, UInt32 typ
+ bool
+ VinceGPUUserClient::start(IOService *provider)
+ {
+-	return IOUserClient::start(provider);
++	if (!IOUserClient::start(provider)) {
++		return false;
++	}
++	IOLog("VinceGPU: user client opened\n");
++	return true;
+ }
+ 
+ void
+@@ -365,6 +418,7 @@ VinceGPUUserClient::freeBuffer(struct gpu_buffer *b)
+ 		b->memory->release();
+ 		b->memory = NULL;
+ 	}
++	OSSafeReleaseNULL(b->surface);
+ 	bzero(b, sizeof(*b));
+ }
+ 
+@@ -449,6 +503,81 @@ VinceGPUUserClient::gemNew(struct msm_gem_new *request)
+ 	return kIOReturnSuccess;
+ }
+ 
++/* The descriptor covers only pixels; SweetSurface keeps its state page
++ * separately. Keep both descriptor and surface alive through GEM_CLOSE.
++ * Re-imports on one DRM connection return the same handle, like PRIME. */
++IOReturn
++VinceGPUUserClient::surfaceBuffer(struct vince_surface *request)
++{
++	bool describe = request->handle == 0xffffffffu;
++	request->handle = 0;
++	SweetSurface *s = sweet_surface_copy(request->surface);
++	if (s == NULL) {
++		return kIOReturnNotFound;
++	}
++	uint64_t size = s->allocSize;
++	IOByteCount length = 0;
++	uint64_t address = s->memory != NULL ?
++	    s->memory->getPhysicalSegment(0, &length, kIOMemoryMapperNone) : 0;
++	uint8_t *kernel = (uint8_t *)s->kernelAddress();
++	/* Never import cached, fragmented, or out-of-aperture memory into
++	 * the identity-mapped A5xx. Mesa can fall back to its copy path. */
++	if (OSDynamicCast(IOBufferMemoryDescriptor, s->memory) == NULL ||
++	    s->mapCache != kIOMapWriteCombineCache || kernel == NULL ||
++	    size == 0 || size > GPU_BUFFER_MAX || (size & PAGE_MASK) ||
++	    address == 0 || (address & PAGE_MASK) || length < size ||
++	    address >= GPU_ADDRESS_LIMIT || size > GPU_ADDRESS_LIMIT - address) {
++		s->release();
++		return kIOReturnUnsupported;
++	}
++	request->size = size;
++	request->offset = s->offset;
++	request->row_bytes = s->bytesPerRow;
++	request->width = s->width;
++	request->height = s->height;
++	request->pixel_format = s->pixelFormat;
++	request->planes = s->planeCount;
++	if (describe) {
++		s->release();
++		return kIOReturnSuccess;
++	}
++
++	IOLockLock(gGPULock);
++	for (uint32_t i = 0; fBuffers != NULL && i < GPU_BUFFERS; i++) {
++		if (fBuffers[i].memory != NULL && fBuffers[i].surface == s) {
++			request->handle = i + 1;
++			IOLockUnlock(gGPULock);
++			s->release();
++			return kIOReturnSuccess;
++		}
++	}
++	for (uint32_t n = 0; fBuffers != NULL && n < GPU_BUFFERS; n++) {
++		uint32_t h = (fNextBuffer + n) % GPU_BUFFERS;
++		if (fBuffers[h].memory == NULL) {
++			struct gpu_buffer *b = &fBuffers[h];
++			bzero(b, sizeof(*b));
++			b->memory = s->memory;
++			b->memory->retain();
++			b->surface = s;  /* takes sweet_surface_copy's retain */
++			b->kernel = kernel;
++			b->address = address;
++			b->size = size;
++			b->flags = MSM_BO_WC;
++			b->fence = s->gpuFence;
++			fNextBuffer = request->handle = h + 1;
++			if (fSurfaces++ < 8) {
++				IOLog("VinceGPU: import surface=%u handle=%u PA=%#llx size=%llu bpr=%u\n",
++				    s->id, request->handle, address, size, s->bytesPerRow);
++			}
++			IOLockUnlock(gGPULock);
++			return kIOReturnSuccess;
++		}
++	}
++	IOLockUnlock(gGPULock);
++	s->release();
++	return kIOReturnNoMemory;
++}
++
+ IOReturn
+ VinceGPUUserClient::gemInfo(struct msm_gem_info *request)
+ {
+@@ -545,7 +674,13 @@ VinceGPUUserClient::submit(struct msm_gem_submit *request)
+ 		ret = kIOReturnTimeout;
+ 	} else {
+ 		for (uint32_t i = 0; i < request->nr_bos; i++) {
+-			buffer(bos[i].handle)->fence = request->fence;
++			struct gpu_buffer *b = buffer(bos[i].handle);
++			b->fence = request->fence;
++			if (b->surface != NULL) {
++				/* Global across clients, including GPU reads: a CPU writer
++				 * must wait for every previous GPU user of this surface. */
++				b->surface->gpuFence = request->fence;
++			}
+ 		}
+ 		if (fSubmits++ < 4) {
+ 			IOLog("VinceGPU: submit fence=%u bos=%u IBs=%u first=%#llx words=%u\n",
+@@ -599,6 +734,7 @@ VinceGPUUserClient::externalMethod(uint32_t selector, IOExternalMethodArguments
+ 		struct msm_submitqueue queue;
+ 		struct msm_submitqueue_query query;
+ 		struct drm_gem_close close;
++		struct vince_surface surface;
+ 	} r;
+ 	size_t size = args->structureInputSize;
+ 	struct gpu_buffer *b;
+@@ -620,12 +756,17 @@ VinceGPUUserClient::externalMethod(uint32_t selector, IOExternalMethodArguments
+ 	case kMsmSubmitQueueClose: expected = sizeof(uint32_t); break;
+ 	case kMsmSubmitQueueQuery: expected = sizeof(r.query); break;
+ 	case kDrmGemClose: expected = sizeof(r.close); break;
++	case kVinceSurface: expected = sizeof(r.surface); break;
+ 	default: return kIOReturnUnsupported;
+ 	}
+ 
+ 	if (args->structureInput == NULL || size != expected || fBuffers == NULL) {
+ 		return kIOReturnBadArgument;
+ 	}
++	if (selector == kVinceSurface &&
++	    (args->structureOutput == NULL || args->structureOutputSize < expected)) {
++		return kIOReturnNoSpace;
++	}
+ 	if (!vince_gpu_ready()) {
+ 		return kIOReturnNotReady;
+ 	}
+@@ -646,13 +787,16 @@ VinceGPUUserClient::externalMethod(uint32_t selector, IOExternalMethodArguments
+ 	case kMsmGemInfo:
+ 		ret = gemInfo(&r.gemInfo);
+ 		break;
++	case kVinceSurface:
++		ret = surfaceBuffer(&r.surface);
++		break;
+ 	case kMsmGemCpuPrep:
+ 		IOLockLock(gGPULock);
+ 		b = buffer(r.cpuPrep.handle);
+ 		patience = (r.cpuPrep.op & 4 /* MSM_PREP_NOSYNC */) ? 0 : millisecondsUntil(&r.cpuPrep.timeout);
+ 		if (b == NULL) {
+ 			ret = kIOReturnNotFound;
+-		} else if (!gpuWait(b->fence, patience)) {
++		} else if (!gpuWait(b->surface != NULL ? b->surface->gpuFence : b->fence, patience)) {
+ 			ret = kIOReturnBusy;
+ 		}
+ 		/* GEM is WC on both sides; order reads after the GPU completion. */

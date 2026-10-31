@@ -99,6 +99,10 @@ jobs:
               b'VinceGPU: Daisy GEM v1: contiguous DMA32, WC, cache-flush fences',
               b'daisygpu_test', b'VinceGPU: memory test PA=',
               b'adreno: step 8: cleared 32 KiB ring and initialized fence scratch',
+              b'SWEET AMFI: backboardd dyld policy flags=',
+              b'VinceGPU: IOAcceleratorES discovery service registered',
+              b'VinceGPU: IOSurface v1: selector 0x7e, shared DMA32/WC, surface fences',
+              b'VinceGPU: import surface=',
           ):
               if marker not in data:
                   raise SystemExit(f'{kernel}: missing daisy fix marker {marker!r}')

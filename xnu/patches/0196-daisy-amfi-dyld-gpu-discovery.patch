@@ -1,0 +1,98 @@
+diff --git a/bsd/kern/sweet_amfi.c b/bsd/kern/sweet_amfi.c
+index 73afcef..2184efb 100644
+--- a/bsd/kern/sweet_amfi.c
++++ b/bsd/kern/sweet_amfi.c
+@@ -305,8 +305,44 @@ sweet_sandbox_syscall(struct proc *p, int call, __unused user_addr_t arg)
+ 	}
+ }
+ 
++/*
++ * libamfi addresses the policy by the exact name "AMFI". Port the Hackios
++ * stand-in's two replies: dyld policy (input flags, user output pointer)
++ * and the boot-arg state queried by ExtensionKit. Without 0x5a, dyld drops
++ * DYLD_INSERT_LIBRARIES before the backboardd injector can run.
++ */
++static int
++sweet_amfi_policy_syscall(struct proc *p, int call, user_addr_t arg)
++{
++	struct {
++		uint64_t input_flags;
++		user_addr_t output_flags;
++	} args;
++	uint64_t flags = 0xffULL;  /* dyld paths, environment, insertion, interposing */
++	uint64_t state = 0x86ULL;  /* this stand-in does not enforce AMFI */
++	int error;
++
++	if (call == 0x60) {
++		return copyout(&state, arg, sizeof(state));
++	}
++	if (call != 0x5a) {
++		return ENOPOLICY;
++	}
++	error = copyin(arg, &args, sizeof(args));
++	if (error == 0) {
++		error = copyout(&flags, args.output_flags, sizeof(flags));
++	}
++	char name[32];
++	proc_name(proc_pid(p), name, sizeof(name));
++	if (strcmp(name, "backboardd") == 0) {
++		printf("SWEET AMFI: backboardd dyld policy flags=0x%llx error=%d\n", flags, error);
++	}
++	return error;
++}
++
+ static const struct mac_policy_ops sweet_amfi_mac_ops = {
+ 	.mpo_vnode_check_signature = sweet_amfi_vnode_check_signature,
++	.mpo_policy_syscall = sweet_amfi_policy_syscall,
+ };
+ 
+ /*
+@@ -360,7 +396,7 @@ static struct mac_policy_conf sweet_sandbox_mac_conf = {
+ static mac_policy_handle_t sweet_sandbox_mac_handle;
+ 
+ static struct mac_policy_conf sweet_amfi_mac_conf = {
+-	.mpc_name = "SWEET AMFI",
++	.mpc_name = "AMFI",
+ 	.mpc_fullname = "SWEET built-in Mobile File Integrity",
+ 	.mpc_ops = &sweet_amfi_mac_ops,
+ };
+diff --git a/iokit/Kernel/arm/VinceGPU.cpp b/iokit/Kernel/arm/VinceGPU.cpp
+index 51f3548..710a737 100755
+--- a/iokit/Kernel/arm/VinceGPU.cpp
++++ b/iokit/Kernel/arm/VinceGPU.cpp
+@@ -235,6 +235,27 @@ public:
+ 
+ OSDefineMetaClassAndStructors(VinceGPU, IOService);
+ 
++/* CoreAnimation waits for this class before selecting its renderer. The
++ * EAGL implementation is provided by our injector, not an Apple plugin. */
++class IOAcceleratorES : public IOService
++{
++	OSDeclareDefaultStructors(IOAcceleratorES);
++};
++
++OSDefineMetaClassAndStructors(IOAcceleratorES, IOService);
++
++static void
++publishAccelerator(IOService *provider)
++{
++	IOAcceleratorES *accelerator = OSTypeAlloc(IOAcceleratorES);
++	if (accelerator != NULL && accelerator->init() && accelerator->attach(provider)) {
++		accelerator->setName("sgx");
++		accelerator->registerService();
++		IOLog("VinceGPU: IOAcceleratorES discovery service registered\n");
++	}
++	OSSafeReleaseNULL(accelerator);
++}
++
+ bool
+ VinceGPU::start(IOService *provider)
+ {
+@@ -250,6 +271,7 @@ VinceGPU::start(IOService *provider)
+ 	setProperty(kIOUserClientClassKey, "VinceGPUUserClient");
+ 	setName("VinceGPU");
+ 	registerService();
++	publishAccelerator(this);
+ 	IOLog("VinceGPU: service started and registered\n");
+ 	IOLog("VinceGPU: Daisy GEM v1: contiguous DMA32, WC, cache-flush fences\n");
+ 	return true;
