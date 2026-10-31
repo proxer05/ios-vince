@@ -730,3 +730,24 @@ Clock changes need that power sequencing and acknowledgement; the current
 touch RPM helper only supports its two fixed LDO votes. No maximum-frequency
 option is implemented in 0200. The existing `vincemhz` accepts 800/1036 and
 otherwise selects 1401.6 MHz, so `vincemhz=2016` would not select 2016 MHz.
+
+### Remaining shader failure located
+
+Filtering the 0199 unified log to boot
+`08EEBA6266604C208A0E06157012A8B8` and sorting by timestamp puts the two
+`glDrawElements: error 0x502` messages immediately after failed bridge
+programs: the vibrant colour matrix, then group-over/group-flat.
+`artifacts/daisy-0200-gl-error-context.log` preserves the focused context.
+All three shaders require `GL_EXT_shader_framebuffer_fetch`.
+Mesa 25.0.7 `freedreno_screen.c:573` only enables `caps->fbfetch` for A6xx,
+but `eagl.c` attempts these private shaders whenever `fetch_offered` is
+true (the default), without checking hardware support. The resulting
+unlinked programs also receive uniform-location queries. The A6xx cache
+flush workaround cannot fix unsupported A5xx shader compilation.
+
+A follow-up userland fix needs a sampled destination-copy path for those
+private effects, proper capability detection, and compile/link diagnostics.
+Simply advertising the extension or applying the A6xx workaround is not
+sufficient. The public extension string already comes from Mesa, so
+CoreAnimation's own shaders can use its fallback. 0200 tests presentation
+with the verified deployed userland first.
