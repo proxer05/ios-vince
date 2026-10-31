@@ -527,5 +527,33 @@ IOKit stand-ins under AddressSanitizer/UndefinedBehaviorSanitizer. It passes
 the recorded target geometry, client image/memory calls, non-null state
 results, attachment bounds, value seeds, cached lookup, failed mapping and
 short-output cleanup, retained lifetime, caller-address preservation, and
-out-of-line results. Kernel build and phone validation are still pending;
-the host test does not validate real VM/cache attributes or GPU rendering.
+out-of-line results. The host test does not validate real VM/cache
+attributes or GPU rendering.
+
+The `MACHINE_CONFIG=VINCE` build passed in
+[run 41152951075](https://github.com/proxer05/ios-vince/actions/runs/41152951075)
+at `e28faf9`, including the linked-kernel marker checks:
+
+- Kernel: `artifacts/kernel-0198/kernel.development.vince`, SHA-256
+  `bff696a81c78f286beb2f6988086e8f66a12cfe37f615f3ddb6b8cdd07aa07fd`.
+- Copy-path image: `artifacts/daisy-gpu-copy-0198/daisy-boot.img`,
+  17,948,672 bytes, SHA-256
+  `401b6953b1278cfb334d60f6deb853c74f5a83c5a6455e1a12d3e24e65c34cc7`.
+- Verified kernel checksum/markers, boot header/digest, appended Daisy DTBs,
+  empty `second`, and payload geometry. Shim and ADT match 0195 (apart from
+  the fresh random seed). Arguments add only `daisysurface_copy=1` to its
+  `cpus=1 daisylog=1 adreno=11 daisygpu_test=1` diagnostic configuration.
+  The preserved 0194 SMP baseline checksum was also checked.
+
+This image is ready for temporary boot; hardware validation is pending.
+It uses the already deployed GPU userland. Test with:
+
+```sh
+fastboot -s 6790a29e0305 boot artifacts/daisy-gpu-copy-0198/daisy-boot.img
+```
+
+Look for `GPU surface copy-only=1`, non-planar `BGRA` targets, successful
+`wrap sel 6` results, and the first `VinceGPU: submit fence=` messages.
+Surface imports are intentionally bypassed in this first test. Recover
+the persistent log to check whether backboardd's `0x30` fault is gone and
+whether draw fences complete before moving to shared-surface testing.
