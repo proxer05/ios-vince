@@ -2,6 +2,9 @@
 
 ## Current status — 2026-10-31
 
+End-of-day resume notes and persistent `/tmp` copies:
+[`GPU-HANDOFF-2026-10-31.md`](GPU-HANDOFF-2026-10-31.md).
+
 The user considers touch sufficient for navigation and has asked to focus on
 GPU acceleration. Preserve `artifacts/daisy-touch-hid-0194-smp/daisy-boot.img`
 as the navigable baseline (SHA-256
@@ -666,10 +669,18 @@ is ready for temporary boot:
 fastboot -s 6790a29e0305 boot artifacts/daisy-gpu-pool-0199/daisy-boot.img
 ```
 
-Hardware validation is pending. Check `GEM pool v1 reserved=256 MiB`, the
+The hardware checks for this image are `GEM pool v1 reserved=256 MiB`, the
 memory-test PASS, `completed fence=`, and successful `wrap ... ro 1`
 results. If a pool allocation fails, its used/peak/largest-span diagnostic
 will distinguish capacity from fragmentation. Compare the multi-second
 frame stalls and GL allocation errors with 0198. Readback still uses the
 copy path; shared surfaces and the eight-core performance test follow
 after this allocator check. Existing deployed userland is sufficient.
+
+The user tested 0199 and reports clean blur with some missing shadows,
+but continued severe lag. The recovered console confirms the full 256 MiB
+reserve, completed draw fences, successful read-only wrapping, and no
+logged allocation failures. At 600 frames the bridge still averages about
+149 ms/frame copying out. See the end-of-day handoff for exact evidence.
+The user requested only log collection and preservation before stopping;
+shared-surface and SMP testing have not been started.
