@@ -751,3 +751,29 @@ Simply advertising the extension or applying the A6xx workaround is not
 sufficient. The public extension string already comes from Mesa, so
 CoreAnimation's own shaders can use its fallback. 0200 tests presentation
 with the verified deployed userland first.
+
+### 0200 build and temporary boot
+
+VINCE DEVELOPMENT CI
+[41205637548](https://github.com/proxer05/ios-vince/actions/runs/41205637548)
+passed at `0e8bad6`, including both new linked-kernel markers. The downloaded
+artifact digest, kernel checksum, boot header/digest, payload layout,
+appended Daisy DTBs, empty `second`, and preserved 0194 baseline all passed
+verification. Packaging scripts and output are saved under `artifacts/`.
+
+- Kernel: `artifacts/kernel-0200/kernel.development.vince`, SHA-256
+  `a0b0c99d1658cceae3a72da0a3e8c89ae694d2619b85ea98c3be9c472b9d7376`.
+- Image: `artifacts/daisy-gpu-shared-0200/daisy-boot.img`, 17,983,488 bytes,
+  SHA-256 `6c1ef32f2053d04b59a3cbffcc8bcb493008cd9042f5615ae86eec013767fee2`.
+- `fastboot -s 6790a29e0305 boot` successfully transferred and started this
+  image. No partition was flashed. Awaiting the user's visual result;
+  successful fastboot transfer does not establish successful XNU rendering.
+
+After a UI exercise, recover the console using the established temporary
+TWRP/static SleuthKit path. Look for `pool v2`, memory-test PASS, absence of
+managed-page backtraces, `VinceGPU: import surface=`, surface row bytes 4608,
+and EAGL GPU-blit/shared counts with reduced copy-out time. Check pool
+exhaustion because GEM and surfaces now share its 256 MiB. Keep clock and
+eight-core tests for after this comparison. Current editable XNU is
+`artifacts/daisy-0200-work/xnu/`; 0200 changes are exported in the committed
+patch, on top of its local `3d19c7c` verified 0199 baseline.
