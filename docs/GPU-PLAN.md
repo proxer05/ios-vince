@@ -645,3 +645,31 @@ caught a compile-time bitmap bound using XNU's runtime `PAGE_SIZE`. The
 bitmap now uses `PAGE_MIN_SIZE` for its static capacity, while allocations
 still follow the actual page size. The pool test now passes with both
 4 KiB and 16 KiB runtime pages under ASan/UBSan.
+
+The VINCE rebuild passed in
+[run 41156231189](https://github.com/proxer05/ios-vince/actions/runs/41156231189)
+at `3d464f6`, including all linked-kernel marker checks. The verified image
+is ready for temporary boot:
+
+- Kernel: `artifacts/kernel-0199/kernel.development.vince`, SHA-256
+  `793ec043a78ec391bf42903dbbb5017fdb1eff939345d861a8bd66a40f3b569b`.
+- Image: `artifacts/daisy-gpu-pool-0199/daisy-boot.img`, 17,983,488 bytes,
+  SHA-256 `aa71ae2f5be85a9889da0eceaef381769ed41c6f00107866554c9e781172e6bf`.
+- Verified downloaded artifact digest, kernel checksum/markers, Android
+  boot header/digest, appended Daisy DTBs, empty `second`, payload geometry,
+  and unchanged 0194 SMP baseline. Shim and ADT match 0198 apart from the
+  fresh random seed. The only added argument is `daisygpu_pool=256`;
+  `cpus=1 daisylog=1 adreno=11 daisygpu_test=1 daisysurface_copy=1` remains
+  selected to compare allocator behaviour against the rendering 0198 boot.
+
+```sh
+fastboot -s 6790a29e0305 boot artifacts/daisy-gpu-pool-0199/daisy-boot.img
+```
+
+Hardware validation is pending. Check `GEM pool v1 reserved=256 MiB`, the
+memory-test PASS, `completed fence=`, and successful `wrap ... ro 1`
+results. If a pool allocation fails, its used/peak/largest-span diagnostic
+will distinguish capacity from fragmentation. Compare the multi-second
+frame stalls and GL allocation errors with 0198. Readback still uses the
+copy path; shared surfaces and the eight-core performance test follow
+after this allocator check. Existing deployed userland is sufficient.
