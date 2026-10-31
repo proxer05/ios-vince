@@ -103,6 +103,9 @@ jobs:
               b'VinceGPU: IOAcceleratorES discovery service registered',
               b'VinceGPU: IOSurface v1: selector 0x7e, shared DMA32/WC, surface fences',
               b'VinceGPU: import surface=',
+              b'SWEET SURF: client-memory v1, BGRA targets, attachments and copy fallback',
+              b'SWEET SURF: wrap sel', b'SWEET SURF: DMA allocation failed; cached copy fallback',
+              b'daisysurface_copy',
           ):
               if marker not in data:
                   raise SystemExit(f'{kernel}: missing daisy fix marker {marker!r}')

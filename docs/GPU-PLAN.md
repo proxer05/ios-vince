@@ -491,3 +491,41 @@ Remaining port work identified by these logs:
 
 The device was left in TWRP after extraction. The navigable 0194 SMP image
 remains the recovery baseline.
+
+## IOSurface crash fixes — 0198
+
+`0198-daisy-iosurface-client-memory.patch` addresses the observed 0197 failures:
+
+- Selectors 6/7 and `IOSurfaceAddress` now pin and retain the caller's actual
+  pixels, map a real shared-state page, and report the correct sub-page
+  address. They keep cached mappings and remain ineligible for GPU import.
+  Invalid ranges and unsupported selectors return errors. The last surface
+  owner releases the prepared memory descriptor; failed mappings/replies
+  unwind their references.
+- Newly allocated `b3a8`, `w30r`, `l10r` and `w30R` targets become non-planar
+  BGRA with recomputed geometry. The failing 1125x2436 target now needs
+  11,071,488 bytes instead of 13,881,344. Existing caller pixels retain their
+  original format.
+- DMA allocation failure falls back to ordinary cached memory, allowing
+  Mesa's copy path. The diagnostic boot argument `daisysurface_copy=1`
+  bypasses surface DMA allocations entirely for the first rendering test;
+  GEM allocations and the GPU memory self-test still use DMA32/WC.
+- Per-surface values, bulk attachments, YCbCr matrix, accelerator binding
+  and purgeability state are retained. Metadata updates require this
+  client's surface reference. Unknown selectors no longer fabricate a
+  successful empty result.
+- Result construction retains its mapping reference across concurrent
+  client teardown, and raced repeat lookups use the same cached-client
+  protocol. Framebuffer bounds account for wrapped pixels' page offset.
+
+References remain Hakios `MiniIOSurface.cpp` and Topaz SweetSurface patches
+0132–0134, adapted for Daisy's identity-mapped GPU and copy fallback.
+
+`python3 tools/tests/test_daisy_surface.py` applies the actual patch chain
+and compiles the whole SweetSurface implementation against functional
+IOKit stand-ins under AddressSanitizer/UndefinedBehaviorSanitizer. It passes
+the recorded target geometry, client image/memory calls, non-null state
+results, attachment bounds, value seeds, cached lookup, failed mapping and
+short-output cleanup, retained lifetime, caller-address preservation, and
+out-of-line results. Kernel build and phone validation are still pending;
+the host test does not validate real VM/cache attributes or GPU rendering.
