@@ -1,0 +1,37 @@
+diff --git a/iokit/Kernel/arm/VinceGPU.cpp b/iokit/Kernel/arm/VinceGPU.cpp
+index 513a4f1..8028a95 100755
+--- a/iokit/Kernel/arm/VinceGPU.cpp
++++ b/iokit/Kernel/arm/VinceGPU.cpp
+@@ -136,6 +136,7 @@ struct gpu_buffer {
+ 
+ static IOLock *gGPULock = NULL;
+ static bool gGPUSurfaces = false;
++static int gpuSurfaceDMA = -1;          /* boot-arg daisysurface_dma=1: share surface memory */
+ 
+ bool
+ vince_surface_enabled(void)
+@@ -408,12 +409,23 @@ gpuGemAllocate(uint64_t size, uint8_t **kernel, uint64_t *address)
+ IOMemoryDescriptor *
+ vince_surface_allocate(uint32_t size, uintptr_t *kernelAddress)
+ {
++	if (gpuSurfaceDMA < 0) {
++		int dma = 0;
++		PE_parse_boot_argn("daisysurface_dma", &dma, sizeof(dma));
++		gpuSurfaceDMA = dma;
++		IOLog("VinceGPU: surface DMA %s; cached copy path otherwise\n", dma ? "enabled" : "off");
++	}
+ 	uint8_t *kernel;
+ 	uint64_t address;
+-	if (!gGPUSurfaces || size == 0 || size > GPU_BUFFER_MAX || (size & PAGE_MASK)) {
++	if (!gpuSurfaceDMA || !gGPUSurfaces || size == 0 || size > GPU_BUFFER_MAX || (size & PAGE_MASK)) {
+ 		return NULL;
+ 	}
+ 	IOMemoryDescriptor *memory = gpuGemAllocate(size, &kernel, &address);
++	if (memory == NULL) {
++		/* The reserve may be full of GEM; a surface can still use the
++		 * ordinary contiguous allocator before falling back to a copy. */
++		memory = gpuAllocate(size, &kernel, &address);
++	}
+ 	if (memory != NULL) {
+ 		*kernelAddress = (uintptr_t)kernel;
+ 	}
