@@ -14,7 +14,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="daisy-surface-", dir="/tmp/opencode") as tmp:
         work = Path(tmp)
         subprocess.run(["git", "init", "-q", str(work)], check=True)
-        for number in ("0092", "0096", "0197", "0198", "0199"):
+        for number in ("0092", "0096", "0197", "0198", "0199", "0200"):
             patch, = (ROOT / "xnu/patches").glob(number + "-*.patch")
             subprocess.run([
                 "git", "-C", str(work), "apply",

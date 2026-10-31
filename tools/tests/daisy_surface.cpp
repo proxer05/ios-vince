@@ -1,8 +1,18 @@
 /* These call the actual externalMethod/lock-result/lifetime code. IOKit alone is mocked. */
 bool vince_surface_enabled() { return true; }
-IOBufferMemoryDescriptor *vince_surface_allocate(uint32_t n) {
+class PoolLease : public IOMemoryDescriptor {
+    void free() override { IOMemoryDescriptor::free(); std::free((void *)address); }
+};
+IOMemoryDescriptor *vince_surface_allocate(uint32_t n, uintptr_t *kernel) {
     ++dmaAttempts;
-    return failDMA ? nullptr : IOBufferMemoryDescriptor::inTaskWithOptions(nullptr, 0, n, page_size);
+    if (failDMA) return nullptr;
+    // A pool lease is an independent descriptor, not an IOBufferMemoryDescriptor.
+    auto md = new PoolLease;
+    void *bytes = nullptr;
+    assert(posix_memalign(&bytes, page_size, n) == 0);
+    md->address = (uintptr_t)bytes; md->length = n;
+    *kernel = md->address;
+    return md;
 }
 bool vince_surface_wait(SweetSurface *, uint32_t) { return true; }
 
@@ -40,7 +50,7 @@ int main() {
     uint32_t id = word(result, 0x18);
     assert(id && quad(result, 0) && quad(result, 8));
     assert(word(result, 0x30) == 'BGRA' && word(result, 0x38) == 0);
-    assert(word(result, 0x28) == 4544 && word(result, 0x1c) == 11071488);
+    assert(word(result, 0x28) == 4608 && word(result, 0x1c) == 11227136);
     assert(sweet_surface_table[id]->mapCache == kIOMapDefaultCache && dmaAttempts == 1);
     assert(sweet_surface_table[id]->allocSize < 13881344); // discarded alpha storage
 
@@ -48,6 +58,20 @@ int main() {
     sweet_surface_copy_only = 1;
     assert(call(c, 0, a) == 0 && dmaAttempts == 1);
     sweet_surface_copy_only = 0;
+
+    // Pool-backed surfaces expose the owned alias and account/free it correctly.
+    failDMA = false;
+    assert(call(c, 0, a) == 0 && dmaAttempts == 2);
+    auto pooled = sweet_surface_table[word(result, 0x18)];
+    assert(pooled->owned && !pooled->wrapped && pooled->backingAddress);
+    assert(OSDynamicCast(IOBufferMemoryDescriptor, pooled->memory) == nullptr);
+    assert(pooled->kernelAddress() == quad(result, 0) && pooled->mapCache == kIOMapWriteCombineCache);
+    // The panel shadow has the same padded pitch as user-created BGRA targets.
+    auto panel = sweet_surface_create_buffer(1125, 2436, 'BGRA');
+    assert(panel && panel->owned && panel->bytesPerRow == 4608);
+    sweet_surface_put(panel); panel->release();
+    assert(!sweet_surface_create_buffer(0, 2436, 'BGRA'));
+    failDMA = true;
 
     // Invalid/unknown creation calls must never report a successful zero-state result.
     assert(call(c, 6, a) == kIOReturnBadArgument);

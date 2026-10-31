@@ -1,0 +1,294 @@
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index 0afdb2c..8f36ac2 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -252,6 +252,9 @@ AppleCLCD::start(IOService *provider)
+ 	fClients = OSArray::withCapacity(4);
+ #endif
+ 	fSurface = sweet_surface_create_physical(fPhys, fWidth, fHeight, fRowBytes, SWEET_FB_FORMAT_BGRA);
++	if (fSurface != NULL) {
++		fRowBytes = fSurface->bytesPerRow;
++	}
+ 	fPixels = fSurface != NULL ? fSurface->kernelAddress() : 0;
+ 	fWorkLoop = IOWorkLoop::workLoop();
+ 	if (fLock == NULL || fClients == NULL || fPixels == 0 || fWorkLoop == NULL) {
+diff --git a/iokit/Kernel/arm/SweetSurface.cpp b/iokit/Kernel/arm/SweetSurface.cpp
+index 4f1d645..df9fa07 100644
+--- a/iokit/Kernel/arm/SweetSurface.cpp
++++ b/iokit/Kernel/arm/SweetSurface.cpp
+@@ -102,7 +102,7 @@ OSDefineMetaClassAndStructors(SweetSurface, OSObject);
+ void
+ SweetSurface::free()
+ {
+-	if (OSDynamicCast(IOBufferMemoryDescriptor, memory) != NULL) {
++	if (owned) {
+ 		OSAddAtomic64(-(SInt64)allocSize, (volatile SInt64 *)&sweet_surface_wired);
+ 	}
+ 	OSSafeReleaseNULL(kernelMap);
+@@ -118,6 +118,9 @@ SweetSurface::free()
+ uintptr_t
+ SweetSurface::kernelAddress()
+ {
++	if (backingAddress != 0) {
++		return backingAddress;
++	}
+ 	IOBufferMemoryDescriptor *buffer = OSDynamicCast(IOBufferMemoryDescriptor, memory);
+ 	if (buffer != NULL) {
+ 		return (uintptr_t)buffer->getBytesNoCopy();
+@@ -275,11 +278,11 @@ sweet_surface_create_physical(uint64_t phys, uint32_t width, uint32_t height,
+ }
+ 
+ #if defined(ARM64_BOARD_CONFIG_VINCE)
+-static IOBufferMemoryDescriptor *
++static IOMemoryDescriptor *
+ sweet_surface_memory(SweetSurface *s)
+ {
+ 	if (vince_surface_enabled() && !sweet_surface_copy_only) {
+-		IOBufferMemoryDescriptor *mem = vince_surface_allocate(s->allocSize);
++		IOMemoryDescriptor *mem = vince_surface_allocate(s->allocSize, &s->backingAddress);
+ 		if (mem != NULL) {
+ 			s->mapCache = kIOMapWriteCombineCache;
+ 			return mem;
+@@ -290,31 +293,43 @@ sweet_surface_memory(SweetSurface *s)
+ 		}
+ 	}
+ 	s->mapCache = kIOMapDefaultCache;
+-	return IOBufferMemoryDescriptor::inTaskWithOptions(kernel_task,
++	IOBufferMemoryDescriptor *mem = IOBufferMemoryDescriptor::inTaskWithOptions(kernel_task,
+ 	    kIODirectionInOut | kIOMemoryKernelUserShared, s->allocSize, page_size);
++	if (mem != NULL) {
++		s->backingAddress = (uintptr_t)mem->getBytesNoCopy();
++	}
++	return mem;
+ }
+ 
+ SweetSurface *
+ sweet_surface_create_buffer(uint32_t width, uint32_t height, uint32_t pixelFormat)
+ {
++	if (width == 0 || height == 0 || width > SWEET_SURFACE_MAX_DIM || height > SWEET_SURFACE_MAX_DIM) {
++		return NULL;
++	}
+ 	SweetSurface *s = sweet_surface_alloc();
+ 	if (s == NULL) {
+ 		return NULL;
+ 	}
+ 	s->width = width;
+ 	s->height = height;
+-	s->bytesPerRow = width * 4;
++	s->bytesPerRow = (width * 4 + 255) & ~255u;
+ 	s->bytesPerElement = 4;
+ 	s->elementWidth = s->elementHeight = 1;
+ 	s->pixelFormat = pixelFormat;
+ 	s->allocSize = (uint32_t)round_page(s->bytesPerRow * height);
+-	IOBufferMemoryDescriptor *mem = sweet_surface_memory(s);
++	if (s->allocSize > SWEET_SURFACE_MAX_ALLOC) {
++		s->release();
++		return NULL;
++	}
++	IOMemoryDescriptor *mem = sweet_surface_memory(s);
+ 	if (mem == NULL) {
+ 		s->release();
+ 		return NULL;
+ 	}
+ 	OSAddAtomic64(s->allocSize, (volatile SInt64 *)&sweet_surface_wired);   /* free() takes it back */
+-	bzero(mem->getBytesNoCopy(), s->allocSize);
++	s->owned = true;
++	bzero((void *)s->backingAddress, s->allocSize);
+ 	s->memory = mem;
+ 	if (!sweet_surface_publish(s)) {
+ 		s->release();
+@@ -431,6 +446,20 @@ sweet_surface_layout(SweetSurface *s, OSDictionary *props)
+ 		s->planeCount = planes->getCount();
+ 	}
+ 
++#if defined(ARM64_BOARD_CONFIG_VINCE)
++	/* A506 GMEM resolves require 64-pixel (256-byte BGRA) rows. A plain
++	 * 64-byte row is rejected by Mesa's fd_resource_from_handle(). Report
++	 * actual new storage; never reinterpret wrapped or planar images. */
++	if (!clientMemory && s->pixelFormat == 'BGRA' && s->planeCount == 0 &&
++	    s->bytesPerElement == 4 && s->elementWidth == 1 && s->elementHeight == 1) {
++		uint64_t row = ((uint64_t)s->bytesPerRow + 255) & ~255ull;
++		if (row > SWEET_SURFACE_MAX_ALLOC) {
++			return kIOReturnBadArgument;
++		}
++		s->bytesPerRow = (uint32_t)row;
++		end = (uint64_t)s->offset + row * s->height;
++	}
++#endif
+ 	uint64_t alloc = bgra ? 0 : sweet_dict_u32(props, "IOSurfaceAllocSize", 0);
+ 	if (alloc < end) {
+ 		alloc = end;
+@@ -497,6 +526,7 @@ IOCoreSurfaceRoot::start(IOService *provider)
+ 	registerService();
+ 	IOLog("SWEET SURF: IOCoreSurfaceRoot registered\n");
+ 	IOLog("SWEET SURF: client-memory v1, BGRA targets, attachments and copy fallback\n");
++	IOLog("SWEET SURF: owned DMA pool surfaces, A506 256-byte BGRA rows\n");
+ #if defined(ARM64_BOARD_CONFIG_VINCE)
+ 	IOLog("SWEET SURF: GPU surface copy-only=%d\n", sweet_surface_copy_only);
+ #endif
+@@ -870,14 +900,16 @@ IOSurfaceRootUserClient::create(IOExternalMethodArguments *args)
+ 		}
+ 	}
+ 	if (ret == kIOReturnSuccess && s->memory == NULL) {
+-		IOBufferMemoryDescriptor *mem = NULL;
++		IOMemoryDescriptor *mem = NULL;
+ 		if ((uint64_t)OSAddAtomic64(s->allocSize, (volatile SInt64 *)&sweet_surface_wired) +
+ 		    s->allocSize <= SWEET_SURFACE_WIRED_MAX) {
+ #if defined(ARM64_BOARD_CONFIG_VINCE)
+ 			mem = sweet_surface_memory(s);
+ #else
+-			mem = IOBufferMemoryDescriptor::inTaskWithOptions(kernel_task,
++			IOBufferMemoryDescriptor *buffer = IOBufferMemoryDescriptor::inTaskWithOptions(kernel_task,
+ 			    kIODirectionInOut | kIOMemoryKernelUserShared, s->allocSize, page_size);
++			mem = buffer;
++			s->backingAddress = buffer != NULL ? (uintptr_t)buffer->getBytesNoCopy() : 0;
+ 			s->mapCache = kIOMapDefaultCache;
+ #endif
+ 		}
+@@ -885,7 +917,8 @@ IOSurfaceRootUserClient::create(IOExternalMethodArguments *args)
+ 			OSAddAtomic64(-(SInt64)s->allocSize, (volatile SInt64 *)&sweet_surface_wired);
+ 			ret = kIOReturnNoMemory;
+ 		} else {
+-			bzero(mem->getBytesNoCopy(), s->allocSize);
++			s->owned = true;
++			bzero((void *)s->backingAddress, s->allocSize);
+ 			s->memory = mem;
+ 			if (!sweet_surface_publish(s)) {
+ 				ret = kIOReturnNoResources;
+diff --git a/iokit/Kernel/arm/SweetSurface.h b/iokit/Kernel/arm/SweetSurface.h
+index ef50ac6..80df4ca 100644
+--- a/iokit/Kernel/arm/SweetSurface.h
++++ b/iokit/Kernel/arm/SweetSurface.h
+@@ -45,6 +45,8 @@ public:
+ 	uint32_t                 wrapDelta;    /* pixels' offset in the wired first page */
+ 	bool                     wrapped;      /* prepared caller memory, always cached */
+ 	bool                     readOnly;     /* client image has no writable mapping */
++	bool                     owned;        /* accounted allocation, including pool leases */
++	uintptr_t                backingAddress; /* owned pixels' existing kernel alias */
+ #if defined(ARM64_BOARD_CONFIG_VINCE)
+ 	uint32_t gpuFence;                     /* latest GPU access; protected by gGPULock */
+ #endif
+@@ -80,7 +82,7 @@ SweetSurface *sweet_surface_create_buffer(uint32_t width, uint32_t height, uint3
+ /* GPU-enabled surfaces use the same contiguous DMA32/WC allocator as GEM.
+  * Wait before CPU access, including the framebuffer's presentation copy. */
+ bool vince_surface_enabled(void);
+-IOBufferMemoryDescriptor *vince_surface_allocate(uint32_t size);
++IOMemoryDescriptor *vince_surface_allocate(uint32_t size, uintptr_t *kernelAddress);
+ bool vince_surface_wait(SweetSurface *surface, uint32_t milliseconds);
+ #endif
+ 
+diff --git a/iokit/Kernel/arm/VinceGPU.cpp b/iokit/Kernel/arm/VinceGPU.cpp
+index 8cbb586..513a4f1 100755
+--- a/iokit/Kernel/arm/VinceGPU.cpp
++++ b/iokit/Kernel/arm/VinceGPU.cpp
+@@ -234,8 +234,8 @@ gpuAllocate(uint64_t size, uint8_t **kernel, uint64_t *address)
+ 
+ /* Opt-in DMA32 reserve: userspace has already fragmented RAM by its fifth
+  * frame. Keep page-aligned GEM spans in early contiguous WC chunks instead
+- * of repeatedly asking vm_page_find_contiguous for 12 MiB. This pool is GEM
+- * only; IOSurfaces still use the existing allocation/copy policy. */
++ * of repeatedly asking vm_page_find_contiguous for 12 MiB. GEM and owned
++ * GPU surfaces share the reserve; cached surfaces retain their copy path. */
+ #define GPU_POOL_CHUNK (32u << 20)
+ #define GPU_POOL_CHUNKS 16
+ #define GPU_POOL_PAGES (GPU_POOL_CHUNK / PAGE_SIZE)
+@@ -277,10 +277,12 @@ gpuPoolMark(uint32_t chunk, uint32_t first, uint32_t pages, bool used)
+ 	}
+ }
+ 
+-/* Use an independent physical descriptor, not IOSubMemoryDescriptor:
++/* Use an independent kernel-virtual descriptor, not IOSubMemoryDescriptor:
+  * XNU's subdescriptor mappings retain the parent, not the slice. A GEM
+  * close must NOT recycle this range while a user mapping still exists.
+- * The reserve owns the physical pages; this descriptor owns their lease. */
++ * The reserve owns the physical pages; this descriptor owns their lease.
++ * Describing managed RAM as physical device memory triggers a backtrace
++ * for each map in DEVELOPMENT kernels. Use the actual wired VM object. */
+ class VinceGPUPoolMemory : public IOGeneralMemoryDescriptor {
+ 	OSDeclareDefaultStructors(VinceGPUPoolMemory);
+ public:
+@@ -292,12 +294,13 @@ OSDefineMetaClassAndStructors(VinceGPUPoolMemory, IOGeneralMemoryDescriptor);
+ void
+ VinceGPUPoolMemory::free()
+ {
++	/* Tear down the prepared VM entry before the range can be leased again. */
++	IOGeneralMemoryDescriptor::free();
+ 	if (pages != 0) {
+ 		IOLockLock(gPoolLock);
+ 		gpuPoolMark(chunk, first, pages, false);
+ 		IOLockUnlock(gPoolLock);
+ 	}
+-	IOGeneralMemoryDescriptor::free();
+ }
+ 
+ static void
+@@ -324,6 +327,7 @@ gpuPoolInit(void)
+ 	}
+ 	IOLog("VinceGPU: GEM pool v1 reserved=%u MiB chunks=%u requested=%d MiB\n",
+ 	    gPoolCount * (GPU_POOL_CHUNK >> 20), gPoolCount, mb);
++	IOLog("VinceGPU: pool v2: managed WC leases, GEM and IOSurface storage\n");
+ }
+ 
+ static IOMemoryDescriptor *
+@@ -372,11 +376,17 @@ gpuGemAllocate(uint64_t size, uint8_t **kernel, uint64_t *address)
+ 
+ 	struct gpu_pool_chunk *c = &gPool[bestChunk];
+ 	uint64_t offset = (uint64_t)first * PAGE_SIZE;
+-	IOAddressRange range = { c->address + offset, size };
++	IOAddressRange range = { (mach_vm_address_t)(c->kernel + offset), size };
+ 	VinceGPUPoolMemory *memory = OSTypeAlloc(VinceGPUPoolMemory);
+ 	IOOptionBits cache = (kIOMapWriteCombineCache >> kIOMapCacheShift) << kIOMemoryBufferCacheShift;
+-	if (memory == NULL || !memory->initWithOptions(&range, 1, 0, NULL,
+-	    kIODirectionInOut | kIOMemoryTypePhysical64 | kIOMemoryMapperNone | kIOMemoryThreadSafe | cache, NULL)) {
++	bool valid = memory != NULL && memory->initWithOptions(&range, 1, 0, kernel_task,
++	    kIODirectionInOut | kIOMemoryTypeVirtual64 | kIOMemoryMapperNone | kIOMemoryThreadSafe |
++	    kIOMemoryAutoPrepare | kIOMemoryPersistent | cache, NULL);
++	IOByteCount span = 0;
++	if (valid) {
++		valid = memory->getPhysicalSegment(0, &span, kIOMemoryMapperNone) == c->address + offset && span >= size;
++	}
++	if (!valid) {
+ 		OSSafeReleaseNULL(memory);
+ 		IOLockLock(gPoolLock);
+ 		gpuPoolMark(bestChunk, first, pages, false);
+@@ -387,7 +397,7 @@ gpuGemAllocate(uint64_t size, uint8_t **kernel, uint64_t *address)
+ 	memory->first = first;
+ 	memory->pages = pages;
+ 	*kernel = c->kernel + offset;
+-	*address = range.address;
++	*address = c->address + offset;
+ 	/* Each new handle is zero-filled, including reused pool spans. Both the
+ 	 * reserve's kernel alias and exported GEM mappings are WC. */
+ 	bzero(*kernel, size);
+@@ -395,15 +405,19 @@ gpuGemAllocate(uint64_t size, uint8_t **kernel, uint64_t *address)
+ 	return memory;
+ }
+ 
+-IOBufferMemoryDescriptor *
+-vince_surface_allocate(uint32_t size)
++IOMemoryDescriptor *
++vince_surface_allocate(uint32_t size, uintptr_t *kernelAddress)
+ {
+ 	uint8_t *kernel;
+ 	uint64_t address;
+ 	if (!gGPUSurfaces || size == 0 || size > GPU_BUFFER_MAX || (size & PAGE_MASK)) {
+ 		return NULL;
+ 	}
+-	return gpuAllocate(size, &kernel, &address);
++	IOMemoryDescriptor *memory = gpuGemAllocate(size, &kernel, &address);
++	if (memory != NULL) {
++		*kernelAddress = (uintptr_t)kernel;
++	}
++	return memory;
+ }
+ 
+ static bool
+@@ -688,7 +702,7 @@ VinceGPUUserClient::surfaceBuffer(struct vince_surface *request)
+ 	uint8_t *kernel = (uint8_t *)s->kernelAddress();
+ 	/* Never import cached, fragmented, or out-of-aperture memory into
+ 	 * the identity-mapped A5xx. Mesa can fall back to its copy path. */
+-	if (OSDynamicCast(IOBufferMemoryDescriptor, s->memory) == NULL ||
++	if (!s->owned || s->wrapped ||
+ 	    s->mapCache != kIOMapWriteCombineCache || kernel == NULL ||
+ 	    size == 0 || size > GPU_BUFFER_MAX || (size & PAGE_MASK) ||
+ 	    address == 0 || (address & PAGE_MASK) || length < size ||

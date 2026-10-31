@@ -24,10 +24,12 @@ static unsigned vm_page_size = PAGE_MIN_SIZE;
 using IOByteCount = uint64_t;
 using IOOptionBits = uint32_t;
 using vm_size_t = uint64_t;
+using mach_vm_address_t = uint64_t;
 constexpr auto kernel_task = nullptr;
 constexpr unsigned kIODirectionInOut = 3, kIOMemoryKernelUserShared = 4,
     kIOMemoryPhysicallyContiguous = 8, kIOMemoryMapperNone = 16,
-    kIOMapWriteCombineCache = 0x400, kIOMemoryTypePhysical64 = 32, kIOMemoryThreadSafe = 64,
+    kIOMapWriteCombineCache = 0x400, kIOMemoryTypeVirtual64 = 32, kIOMemoryThreadSafe = 64,
+    kIOMemoryAutoPrepare = 128, kIOMemoryPersistent = 256,
     kIOMapCacheShift = 8, kIOMemoryBufferCacheShift = 28;
 using IOLock = std::mutex;
 static IOLock *IOLockAlloc() { return new IOLock; }
@@ -66,7 +68,10 @@ public:
 IOMemoryMap *IOMemoryDescriptor::map() { return new IOMemoryMap(this); }
 static unsigned physicalCalls, failPhysicalAt;
 static uint64_t nextPA = 0xa4000000;
-static bool failDescriptor;
+static bool failDescriptor, failSpan;
+static unsigned preparations, completions;
+struct Allocation { uintptr_t base; uint64_t size, pa; };
+static std::vector<Allocation> allocations;
 class IOBufferMemoryDescriptor : public IOMemoryDescriptor {
     void *data = nullptr;
 public:
@@ -77,19 +82,37 @@ public:
         auto p = new IOBufferMemoryDescriptor;
         assert(posix_memalign(&p->data, PAGE_SIZE, size) == 0);
         nextPA = (nextPA + PAGE_MASK) & ~(uint64_t)PAGE_MASK;
-        p->size = size; p->pa = nextPA; nextPA += size; return p;
+        p->size = size; p->pa = nextPA; nextPA += size;
+        allocations.push_back({(uintptr_t)p->data, size, p->pa});
+        return p;
     }
     void *getBytesNoCopy() { return data; }
-    void free() override { std::free(data); }
+    void free() override {
+        allocations.erase(std::remove_if(allocations.begin(), allocations.end(),
+            [this](const Allocation &a) { return a.base == (uintptr_t)data; }), allocations.end());
+        std::free(data);
+    }
 };
 class IOGeneralMemoryDescriptor : public IOMemoryDescriptor {
+    bool prepared = false;
 public:
     bool initWithOptions(IOAddressRange *range, unsigned count, unsigned offset,
                          decltype(nullptr), unsigned flags, decltype(nullptr)) {
-        assert(count == 1 && offset == 0 && (flags & kIOMemoryTypePhysical64));
+        assert(count == 1 && offset == 0 && (flags & kIOMemoryTypeVirtual64));
         assert(flags & kIOMemoryMapperNone);
+        assert((flags & kIOMemoryAutoPrepare) && (flags & kIOMemoryPersistent));
         cache = (flags >> kIOMemoryBufferCacheShift) << kIOMapCacheShift;
         assert(cache == kIOMapWriteCombineCache);
-        pa = range->address; size = range->length; return !failDescriptor;
+        if (failDescriptor) return false;
+        for (const auto &a : allocations) {
+            if (range->address >= a.base && range->address - a.base < a.size) {
+                auto off = range->address - a.base;
+                assert(range->length <= a.size - off);
+                pa = a.pa + off + (failSpan ? PAGE_SIZE : 0); size = range->length;
+                prepared = true; ++preparations; return true;
+            }
+        }
+        assert(false); return false;
     }
+    void free() override { if (prepared) { ++completions; prepared = false; } }
 };

@@ -12,6 +12,7 @@ static IOMemoryDescriptor *allocate(uint64_t size, uint8_t **bytes = nullptr) {
 
 static void cleanup() {
     assert(gPoolUsed == 0);
+    assert(preparations == completions);
     for (unsigned i = 0; i < gPoolCount; ++i) {
         for (auto bits : gPool[i].used) assert(bits == 0);
         gPool[i].memory->release(); gPool[i] = {};
@@ -55,6 +56,8 @@ static void exercise() {
 
     // Descriptor failure unwinds its lease; adjacent frees coalesce for a whole chunk.
     failDescriptor = true; assert(!allocate(target) && gPoolUsed == 0); failDescriptor = false;
+    failSpan = true; assert(!allocate(target) && gPoolUsed == 0); failSpan = false;
+    assert(preparations == completions);
     std::vector<IOMemoryDescriptor *> pieces;
     for (unsigned i = 0; i < 128; ++i) { a = allocate(512u << 10); assert(a); pieces.push_back(a); }
     for (unsigned parity = 0; parity < 2; ++parity)

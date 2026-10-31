@@ -684,3 +684,49 @@ logged allocation failures. At 600 frames the bridge still averages about
 149 ms/frame copying out. See the end-of-day handoff for exact evidence.
 The user requested only log collection and preservation before stopping;
 shared-surface and SMP testing have not been started.
+
+## Managed pool surfaces and A506 pitch — 0200
+
+Work resumed at the user's request. Review of the 0199 console identified
+the repeated backtraces as `IOMemoryDescriptor physical with managed page`,
+emitted when DEVELOPMENT XNU maps the pool's physical descriptors. Patch
+`0200-daisy-gpu-managed-pool-surfaces.patch` describes each independent
+lease through the reserve's wired kernel virtual address, auto-prepares
+its persistent VM entry, and checks the complete physical span against
+the reserved DMA32 range. The descriptor tears down that VM entry before
+returning the span. User mappings still retain the lease through GEM_CLOSE.
+
+Owned IOSurfaces now share the early reserve and track their allocation
+and kernel alias explicitly. Cached/client-memory surfaces retain their
+fallback. Mesa 25.0.7 `fd_resource_from_handle()` requires 64-pixel rows on
+A506 (`gmem_align_w=64`), so newly allocated non-planar BGRA targets now
+report 256-byte-aligned rows: 1125 pixels use 4608 bytes rather than 4544.
+Wrapped images keep their actual pitch. The framebuffer's shadow surface
+uses the same alignment and its returned pitch feeds the panel converter.
+The deployed EAGL bridge already supports a GPU blit into imported surfaces.
+
+ASan/UBSan surface and pool checks pass, including pooled surface accounting,
+BGRA geometry, cached/read-only wrapping, mapping lifetime, rejected DMA
+spans, descriptor failures, and 4 KiB/16 KiB pages. Hardware validation is
+pending. The next image enables shared surfaces by removing
+`daisysurface_copy=1`; it keeps `cpus=1`, `daisylog=1`, `adreno=11`,
+`daisygpu_test=1`, and `daisygpu_pool=256` for comparable diagnostics.
+
+### CPU/GPU clock investigation
+
+The user suggested maximum CPU/GPU frequencies. The 0199 console measures
+CPU 0 at 1401 MHz (APCS PLL L=73) and records GFX3D CFG=0x507, the stock
+100 MHz GPLL0_DIV2 configuration. Stock KGSL reports a 650 MHz GPU maximum.
+Pinned Xiaomi source `6421aa5cdc56e9ef7c6329e0a05164503e1513ef`, saved in
+`artifacts/daisy-clock-reference/`, confirms:
+
+- 650 MHz uses GPLL3 at 1300 MHz with its divide-by-two output.
+- GPU corner 7 uses the CX TURBO RPM level, bypasses the graphics LDO,
+  and selects graphics memory-acceleration corner 2.
+- The ordinary CPU speed-bin table reaches 2016 MHz; the actual fuse bin
+  and CPR4/S5 voltage setup must be used rather than the table alone.
+
+Clock changes need that power sequencing and acknowledgement; the current
+touch RPM helper only supports its two fixed LDO votes. No maximum-frequency
+option is implemented in 0200. The existing `vincemhz` accepts 800/1036 and
+otherwise selects 1401.6 MHz, so `vincemhz=2016` would not select 2016 MHz.
