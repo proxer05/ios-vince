@@ -29,11 +29,13 @@ The imported `0181-vince-adreno-506-bringup.patch` contains the hardware
 startup steps and the `VinceGPU` IOKit command-submission service. Its
 `gpu=1` selector requests all eleven steps; `adreno=N` stops after step N.
 Both are opt-in. The full GPU userland stack is deployed and verified.
-The 0197 hardware boot loads the injector/EAGL bridge and creates Mesa
-25.0.7 contexts reporting `FD506 / OpenGL ES 3.1`. It stays black because
-backboardd rejects `b3a8` render targets and crashes on an invalid wrapped
-IOSurface; later large contiguous allocations fail. No draw submissions or
-GPU surface imports were logged. See [0197 black-screen diagnosis](#0197-black-screen-diagnosis--2026-10-31).
+**0198 produces visible GPU-rendered frames.** The user reports working blur
+but severe lag. The recovered console shows `FD506 / OpenGL ES 3.1`, GEM
+submissions, BGRA framebuffer swaps and one Mesa context, with no recorded
+backboardd crash loop. The copy path takes about 160–220 ms per readback;
+111 failed 12 MiB contiguous GEM allocations cause additional multi-second
+stalls and GL errors. Shared-surface rendering remains unvalidated. See
+[0198 rendering result](#0198-rendering-result--2026-10-31).
 
 ## Recovery evidence
 
@@ -545,7 +547,7 @@ at `e28faf9`, including the linked-kernel marker checks:
   `cpus=1 daisylog=1 adreno=11 daisygpu_test=1` diagnostic configuration.
   The preserved 0194 SMP baseline checksum was also checked.
 
-This image is ready for temporary boot; hardware validation is pending.
+This image was temporarily booted; the rendering result is recorded below.
 It uses the already deployed GPU userland. Test with:
 
 ```sh
@@ -557,3 +559,83 @@ Look for `GPU surface copy-only=1`, non-planar `BGRA` targets, successful
 Surface imports are intentionally bypassed in this first test. Recover
 the persistent log to check whether backboardd's `0x30` fault is gone and
 whether draw fences complete before moving to shared-surface testing.
+
+## 0198 rendering result — 2026-10-31
+
+The user reports that the UI renders and blur no longer has its software
+renderer's white background, but interaction is very laggy. After the user
+returned to fastboot, temporarily booted
+`/smb/twrp-3.7.1_12-daisy-20260715-2011.img` and recovered the logs:
+
+- Console: `artifacts/console-gpu-copy-0198-20261031.log`, 496,590 bytes,
+  SHA-256 `99ae01535a47aa2d0024f4f3230fe604f8f8cdc750a23271cdffd01e7defbbbe`.
+- Unified log: `artifacts/gpu-copy-0198-logs-20261031/parsed/unified.jsonl`;
+  866,030 messages and zero unresolved strings. Filter boot UUID
+  `25C39B433AFB4ECE97421BF86F4C9BA2` for 53,446 new-boot messages, recorded
+  from `2026-10-31T01:02:15.249498368Z` to `2026-10-31T01:03:12.815897088Z`.
+  The other two boots are older evidence; this recorded range is not a
+  wall-clock measurement of the test's duration.
+
+`copy-only=1` is active and the memory self-test passes. The console has
+one Mesa context, submissions starting at fence 2 (34 BOs, four IBs), and
+BGRA swaps reaching the framebuffer. No panic or backboardd crash marker
+was found. This is the first hardware evidence of Mesa draws and visible
+presentation, rather than just the memory self-test.
+
+Two costs dominate the captured frame summaries:
+
+- Readback generally takes 160–220 ms per full target. The first targets
+  are 1125x2436 BGRA, with a 4544-byte stride. Copy-only mode uploads and
+  reads back roughly 10.8 MiB per full frame, still on one CPU with logging.
+- There are 111 failed 12 MiB GEM allocations and three failed 3 MiB
+  allocations. `vm_page_find_contiguous` scans about 344,219 pages and
+  yields hundreds of times without finding a suitable run. GL reports
+  out-of-memory and invalid-framebuffer errors, and frames 5/6 take about
+  29/36 seconds in the bridge's timing. Surface allocation fallback alone
+  cannot fix Mesa's own GEM allocation failures.
+
+The first twelve wrapped-image diagnostics include six successful wraps
+and six `0x2` failures. This is `KERN_PROTECTION_FAILURE` while preparing
+client memory for writing, not a null successful result. Read-only static
+images need the read-only descriptor fallback already used by Hakios.
+
+The device was left in TWRP after extraction. No partition was flashed.
+
+## Reserved GEM pool and read-only images — 0199
+
+`0199-daisy-gpu-reserved-gem-pool.patch` adds the diagnostic boot argument
+`daisygpu_pool=N` (MiB, default off). At GPU service startup it reserves
+32 MiB contiguous DMA32/WC chunks, up to 512 MiB total, before userland
+fragments RAM. The next copy-path test requests 256 MiB.
+
+GEM allocations use page-aligned best-fit spans inside this reserve. Freed
+spans coalesce, reused spans are zeroed, and exhaustion reports used/peak
+storage and the largest free span rather than entering another global VM
+scan. Pool mode currently supports individual GEM allocations up to 32 MiB.
+The allocator-backed GPU memory test also exercises the pool when enabled.
+The original allocator remains selected when the pool is disabled or no
+chunk could be reserved. IOSurface allocation policy is unchanged.
+
+Each lease is an independent physical memory descriptor with a WC default
+cache mode. Its last release returns the span to the pool; a live mapping
+therefore prevents reuse after GEM_CLOSE. This deliberately avoids XNU's
+`IOSubMemoryDescriptor`, whose mapping retains the parent rather than the
+slice. Existing fence waits and stalled-buffer retention still apply.
+The first four successful fence waits now log explicit completion markers.
+
+Client-memory wrapping retries protection failures with `kIODirectionOut`.
+These surfaces retain read-only cached mappings, reject write locks, and
+remain on Mesa's copy path. The wrap diagnostic includes `ro` status.
+
+Host ASan/UBSan checks:
+
+```sh
+python3 tools/tests/test_daisy_surface.py
+python3 tools/tests/test_daisy_gpu_pool.py
+```
+
+These replay the surface calls and exercise the actual pool allocator,
+including 111 repeated 12 MiB targets, fragmentation/coalescing, zero-fill,
+mapping lifetime, descriptor failures and partial reserve initialization.
+Real WC mapping, early reservation capacity and rendering performance
+still require the VINCE build and a phone test.

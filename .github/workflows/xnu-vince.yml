@@ -106,6 +106,8 @@ jobs:
               b'SWEET SURF: client-memory v1, BGRA targets, attachments and copy fallback',
               b'SWEET SURF: wrap sel', b'SWEET SURF: DMA allocation failed; cached copy fallback',
               b'daisysurface_copy',
+              b'VinceGPU: GEM pool v1 reserved=', b'VinceGPU: GEM pool exhausted request=',
+              b'VinceGPU: completed fence=', b'daisygpu_pool',
           ):
               if marker not in data:
                   raise SystemExit(f'{kernel}: missing daisy fix marker {marker!r}')

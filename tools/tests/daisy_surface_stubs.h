@@ -36,8 +36,9 @@ using IOByteCount = uint64_t;
 using IOReturn = int;
 constexpr IOReturn kIOReturnSuccess = 0, kIOReturnBadArgument = 1, kIOReturnNoMemory = 2,
     kIOReturnVMError = 3, kIOReturnNoResources = 4, kIOReturnNotFound = 5,
-    kIOReturnNoSpace = 6, kIOReturnUnsupported = 7, kIOReturnBusy = 8;
-constexpr unsigned kIODirectionInOut = 0, kIOMemoryKernelUserShared = 0,
+    kIOReturnNoSpace = 6, kIOReturnUnsupported = 7, kIOReturnBusy = 8, kIOReturnNotWritable = 9,
+    KERN_PROTECTION_FAILURE = 10;
+constexpr unsigned kIODirectionInOut = 0, kIODirectionOut = 1, kIOMemoryKernelUserShared = 0,
     kIOMapDefaultCache = 0, kIOMapWriteCombineCache = 1, kIOMapAnywhere = 2, kIOMapReadOnly = 4;
 constexpr unsigned page_size = 4096;
 constexpr task_t kernel_task = nullptr;
@@ -114,7 +115,7 @@ public:
 static OSObject *decoded;
 static OSObject *OSUnserializeXML(const char *, uint32_t) { if (decoded) decoded->retain(); return decoded; }
 
-static bool failDMA, failOrdinary, failMapping, failPrepare;
+static bool failDMA, failOrdinary, failMapping, failPrepare, clientReadOnly;
 static unsigned preparations, completions, dmaAttempts;
 static uintptr_t clientBase;
 static uint64_t clientSize;
@@ -124,14 +125,17 @@ public:
     uintptr_t address = 0;
     uint64_t length = 0;
     bool caller = false;
+    bool readOnly = false;
     unsigned prepared = 0;
-    static IOMemoryDescriptor *withAddressRange(uint64_t a, uint64_t n, unsigned, task_t) {
-        auto p = new IOMemoryDescriptor; p->address = a; p->length = n; p->caller = true; return p;
+    static IOMemoryDescriptor *withAddressRange(uint64_t a, uint64_t n, unsigned direction, task_t) {
+        auto p = new IOMemoryDescriptor; p->address = a; p->length = n; p->caller = true;
+        p->readOnly = direction == kIODirectionOut; return p;
     }
     static IOMemoryDescriptor *withPhysicalAddress(uint64_t a, uint64_t n, unsigned) {
         auto p = new IOMemoryDescriptor; p->address = a; p->length = n; return p;
     }
     IOReturn prepare() {
+        if (caller && clientReadOnly && !readOnly) return KERN_PROTECTION_FAILURE;
         if (failPrepare || (caller && (address < clientBase || address - clientBase > clientSize ||
             length > clientSize - (address - clientBase)))) return kIOReturnVMError;
         ++prepared; ++preparations; return 0;
@@ -153,8 +157,11 @@ public:
     uint64_t getVirtualAddress() { return md->address; }
     void free() override { md->release(); }
 };
-IOMemoryMap *IOMemoryDescriptor::map(unsigned) { return failMapping ? nullptr : new IOMemoryMap(this); }
-IOMemoryMap *IOMemoryDescriptor::createMappingInTask(task_t, uint64_t, unsigned) { return map(0); }
+IOMemoryMap *IOMemoryDescriptor::map(unsigned options) {
+    if (readOnly) assert(options & kIOMapReadOnly);
+    return failMapping ? nullptr : new IOMemoryMap(this);
+}
+IOMemoryMap *IOMemoryDescriptor::createMappingInTask(task_t, uint64_t, unsigned options) { return map(options); }
 class IOBufferMemoryDescriptor : public IOMemoryDescriptor {
 public:
     static IOBufferMemoryDescriptor *inTaskWithOptions(task_t, unsigned, uint64_t n, unsigned) {

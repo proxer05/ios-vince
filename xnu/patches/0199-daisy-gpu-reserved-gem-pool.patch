@@ -1,0 +1,321 @@
+diff --git a/iokit/Kernel/arm/SweetSurface.cpp b/iokit/Kernel/arm/SweetSurface.cpp
+index 40c13d2..4f1d645 100644
+--- a/iokit/Kernel/arm/SweetSurface.cpp
++++ b/iokit/Kernel/arm/SweetSurface.cpp
+@@ -124,7 +124,7 @@ SweetSurface::kernelAddress()
+ 	}
+ 	IOLockLock(sweet_surface_lock);
+ 	if (kernelMap == NULL && memory != NULL) {
+-		kernelMap = memory->map(mapCache);
++		kernelMap = memory->map(mapCache | (readOnly ? kIOMapReadOnly : 0));
+ 	}
+ 	IOLockUnlock(sweet_surface_lock);
+ 	return kernelMap != NULL ? (uintptr_t)kernelMap->getVirtualAddress() + wrapDelta : 0;
+@@ -637,7 +637,8 @@ IOSurfaceRootUserClient::addRef(SweetSurface *s, SweetSurfaceRef **refOut, bool
+ 	s->retain();
+ 	ref->surface = s;
+ 	ref->count = 1;
+-	ref->data = s->memory->createMappingInTask(fTask, 0, kIOMapAnywhere | s->mapCache);
++	ref->data = s->memory->createMappingInTask(fTask, 0,
++	    kIOMapAnywhere | s->mapCache | (s->readOnly ? kIOMapReadOnly : 0));
+ 	ref->state = s->state->createMappingInTask(fTask, 0, kIOMapAnywhere | kIOMapReadOnly);
+ 	if (ref->data == NULL || ref->state == NULL) {
+ 		ref->release();
+@@ -787,6 +788,17 @@ sweet_surface_use_task_memory(SweetSurface *s, task_t task, uint64_t address, ui
+ 		return kIOReturnNoMemory;
+ 	}
+ 	IOReturn ret = md->prepare();
++	if (ret == KERN_PROTECTION_FAILURE) {
++		/* Static images may be read-only. Hakios retries with direction Out:
++		 * pin for CPU/GPU reads, never manufacture a writable alias. */
++		md->release();
++		md = IOMemoryDescriptor::withAddressRange(first, length, kIODirectionOut, task);
++		if (md == NULL) {
++			return kIOReturnNoMemory;
++		}
++		ret = md->prepare();
++		s->readOnly = ret == kIOReturnSuccess;
++	}
+ 	if (ret != kIOReturnSuccess) {
+ 		md->release();
+ 		return ret;
+@@ -956,9 +968,9 @@ IOSurfaceRootUserClient::wrapClient(uint32_t selector, IOExternalMethodArguments
+ 	}
+ 	static uint32_t told;
+ 	if (told++ < 12) {
+-		IOLog("SWEET SURF: wrap sel %u id %u %ux%u fmt 0x%x bpr %u size %u delta %u -> 0x%x\n",
++		IOLog("SWEET SURF: wrap sel %u id %u %ux%u fmt 0x%x bpr %u size %u delta %u ro %u -> 0x%x\n",
+ 		    selector, s->id, s->width, s->height, s->pixelFormat, s->bytesPerRow,
+-		    s->allocSize, s->wrapDelta, ret);
++		    s->allocSize, s->wrapDelta, s->readOnly, ret);
+ 	}
+ 	s->release();
+ 	return ret;
+@@ -1280,6 +1292,10 @@ IOSurfaceRootUserClient::trapLock(void *id, __unused void *options, void *seedOu
+ 	if (s == NULL) {
+ 		return kIOReturnNotFound;
+ 	}
++	if (s->readOnly && !((uintptr_t)options & 1 /* kIOSurfaceLockReadOnly */)) {
++		s->release();
++		return kIOReturnNotWritable;
++	}
+ #if defined(ARM64_BOARD_CONFIG_VINCE)
+ 	/* kIOSurfaceLockAvoidSync (2): poll rather than wait. */
+ 	if (!vince_surface_wait(s, ((uintptr_t)options & 2) ? 0 : 2000)) {
+diff --git a/iokit/Kernel/arm/SweetSurface.h b/iokit/Kernel/arm/SweetSurface.h
+index 6a3ceec..ef50ac6 100644
+--- a/iokit/Kernel/arm/SweetSurface.h
++++ b/iokit/Kernel/arm/SweetSurface.h
+@@ -44,6 +44,7 @@ public:
+ 	uint32_t                 purgeable;
+ 	uint32_t                 wrapDelta;    /* pixels' offset in the wired first page */
+ 	bool                     wrapped;      /* prepared caller memory, always cached */
++	bool                     readOnly;     /* client image has no writable mapping */
+ #if defined(ARM64_BOARD_CONFIG_VINCE)
+ 	uint32_t gpuFence;                     /* latest GPU access; protected by gGPULock */
+ #endif
+diff --git a/iokit/Kernel/arm/VinceGPU.cpp b/iokit/Kernel/arm/VinceGPU.cpp
+index 5e0e536..19fe7dc 100755
+--- a/iokit/Kernel/arm/VinceGPU.cpp
++++ b/iokit/Kernel/arm/VinceGPU.cpp
+@@ -232,6 +232,167 @@ gpuAllocate(uint64_t size, uint8_t **kernel, uint64_t *address)
+ 	return memory;
+ }
+ 
++/* Opt-in DMA32 reserve: userspace has already fragmented RAM by its fifth
++ * frame. Keep page-aligned GEM spans in early contiguous WC chunks instead
++ * of repeatedly asking vm_page_find_contiguous for 12 MiB. This pool is GEM
++ * only; IOSurfaces still use the existing allocation/copy policy. */
++#define GPU_POOL_CHUNK (32u << 20)
++#define GPU_POOL_CHUNKS 16
++#define GPU_POOL_PAGES (GPU_POOL_CHUNK / PAGE_SIZE)
++struct gpu_pool_chunk {
++	IOBufferMemoryDescriptor *memory;
++	uint8_t *kernel;
++	uint64_t address;
++	uint64_t used[GPU_POOL_PAGES / 64];
++};
++static struct gpu_pool_chunk gPool[GPU_POOL_CHUNKS];
++static IOLock *gPoolLock;
++static uint32_t gPoolCount, gPoolUsed, gPoolPeak, gPoolMisses;
++
++static bool
++gpuPoolPageUsed(uint32_t chunk, uint32_t page)
++{
++	return (gPool[chunk].used[page / 64] & (1ull << (page % 64))) != 0;
++}
++
++/* Pool lock held. A bitmap coalesces adjacent freed spans automatically. */
++static void
++gpuPoolMark(uint32_t chunk, uint32_t first, uint32_t pages, bool used)
++{
++	for (uint32_t p = first; p < first + pages; p++) {
++		uint64_t bit = 1ull << (p % 64);
++		if (used) {
++			gPool[chunk].used[p / 64] |= bit;
++		} else {
++			gPool[chunk].used[p / 64] &= ~bit;
++		}
++	}
++	if (used) {
++		gPoolUsed += pages;
++		gPoolPeak = MAX(gPoolPeak, gPoolUsed);
++	} else {
++		gPoolUsed -= pages;
++	}
++}
++
++/* Use an independent physical descriptor, not IOSubMemoryDescriptor:
++ * XNU's subdescriptor mappings retain the parent, not the slice. A GEM
++ * close must NOT recycle this range while a user mapping still exists.
++ * The reserve owns the physical pages; this descriptor owns their lease. */
++class VinceGPUPoolMemory : public IOGeneralMemoryDescriptor {
++	OSDeclareDefaultStructors(VinceGPUPoolMemory);
++public:
++	uint32_t chunk, first, pages;
++	void free() APPLE_KEXT_OVERRIDE;
++};
++OSDefineMetaClassAndStructors(VinceGPUPoolMemory, IOGeneralMemoryDescriptor);
++
++void
++VinceGPUPoolMemory::free()
++{
++	if (pages != 0) {
++		IOLockLock(gPoolLock);
++		gpuPoolMark(chunk, first, pages, false);
++		IOLockUnlock(gPoolLock);
++	}
++	IOGeneralMemoryDescriptor::free();
++}
++
++static void
++gpuPoolInit(void)
++{
++	int mb = 0;
++	PE_parse_boot_argn("daisygpu_pool", &mb, sizeof(mb));
++	if (mb <= 0 || gPoolLock != NULL) {
++		return;
++	}
++	mb = MIN(mb, (int)(GPU_POOL_CHUNKS * (GPU_POOL_CHUNK >> 20)));
++	uint32_t count = ((uint32_t)mb + (GPU_POOL_CHUNK >> 20) - 1) / (GPU_POOL_CHUNK >> 20);
++	gPoolLock = IOLockAlloc();
++	if (gPoolLock == NULL) {
++		return;
++	}
++	for (uint32_t i = 0; i < count; i++) {
++		struct gpu_pool_chunk *c = &gPool[i];
++		c->memory = gpuAllocate(GPU_POOL_CHUNK, &c->kernel, &c->address);
++		if (c->memory == NULL) {
++			break;
++		}
++		gPoolCount++;
++	}
++	IOLog("VinceGPU: GEM pool v1 reserved=%u MiB chunks=%u requested=%d MiB\n",
++	    gPoolCount * (GPU_POOL_CHUNK >> 20), gPoolCount, mb);
++}
++
++static IOMemoryDescriptor *
++gpuGemAllocate(uint64_t size, uint8_t **kernel, uint64_t *address)
++{
++	if (gPoolCount == 0) {
++		return gpuAllocate(size, kernel, address);
++	}
++	if (size == 0 || size > GPU_BUFFER_MAX || (size & PAGE_MASK)) {
++		return NULL;
++	}
++	uint32_t pages = (uint32_t)(size / PAGE_SIZE);
++	uint32_t best = GPU_POOL_PAGES + 1, bestChunk = 0, first = 0, largest = 0;
++	IOLockLock(gPoolLock);
++	for (uint32_t i = 0; i < gPoolCount; i++) {
++		for (uint32_t p = 0; p < GPU_POOL_PAGES;) {
++			if (gpuPoolPageUsed(i, p)) {
++				p++;
++				continue;
++			}
++			uint32_t start = p;
++			while (p < GPU_POOL_PAGES && !gpuPoolPageUsed(i, p)) {
++				p++;
++			}
++			uint32_t run = p - start;
++			largest = MAX(largest, run);
++			if (run >= pages && run < best) {
++				best = run;
++				bestChunk = i;
++				first = start;
++			}
++		}
++	}
++	if (best > GPU_POOL_PAGES) {
++		if (gPoolMisses++ < 8) {
++			IOLog("VinceGPU: GEM pool exhausted request=%llu used=%u KiB peak=%u KiB largest=%u KiB\n",
++			    size, gPoolUsed * (PAGE_SIZE / 1024), gPoolPeak * (PAGE_SIZE / 1024),
++			    largest * (PAGE_SIZE / 1024));
++		}
++		IOLockUnlock(gPoolLock);
++		/* A bounded failure, not another multi-second global VM scan. */
++		return NULL;
++	}
++	gpuPoolMark(bestChunk, first, pages, true);
++	IOLockUnlock(gPoolLock);
++
++	struct gpu_pool_chunk *c = &gPool[bestChunk];
++	uint64_t offset = (uint64_t)first * PAGE_SIZE;
++	IOAddressRange range = { c->address + offset, size };
++	VinceGPUPoolMemory *memory = OSTypeAlloc(VinceGPUPoolMemory);
++	IOOptionBits cache = (kIOMapWriteCombineCache >> kIOMapCacheShift) << kIOMemoryBufferCacheShift;
++	if (memory == NULL || !memory->initWithOptions(&range, 1, 0, NULL,
++	    kIODirectionInOut | kIOMemoryTypePhysical64 | kIOMemoryMapperNone | kIOMemoryThreadSafe | cache, NULL)) {
++		OSSafeReleaseNULL(memory);
++		IOLockLock(gPoolLock);
++		gpuPoolMark(bestChunk, first, pages, false);
++		IOLockUnlock(gPoolLock);
++		return NULL;
++	}
++	memory->chunk = bestChunk;
++	memory->first = first;
++	memory->pages = pages;
++	*kernel = c->kernel + offset;
++	*address = range.address;
++	/* Each new handle is zero-filled, including reused pool spans. Both the
++	 * reserve's kernel alias and exported GEM mappings are WC. */
++	bzero(*kernel, size);
++	gpuToMemory(*kernel, size);
++	return memory;
++}
++
+ IOBufferMemoryDescriptor *
+ vince_surface_allocate(uint32_t size)
+ {
+@@ -249,7 +410,7 @@ gpuMemoryTest(void)
+ 	uint8_t *kernel;
+ 	uint64_t address;
+ 	const uint32_t size = 4 * PAGE_SIZE;
+-	IOBufferMemoryDescriptor *memory = gpuAllocate(size, &kernel, &address);
++	IOMemoryDescriptor *memory = gpuGemAllocate(size, &kernel, &address);
+ 	if (memory == NULL) {
+ 		return false;
+ 	}
+@@ -307,6 +468,7 @@ VinceGPU::start(IOService *provider)
+ 		return false;
+ 	}
+ 	int test = 0;
++	gpuPoolInit();
+ 	PE_parse_boot_argn("daisygpu_test", &test, sizeof(test));
+ 	if (test && !gpuMemoryTest()) {
+ 		IOLog("VinceGPU: memory test failed; service not registered\n");
+@@ -381,6 +543,7 @@ private:
+ 	uint32_t fNextBuffer;
+ 	uint32_t fNextQueue;
+ 	uint32_t fSubmits;
++	uint32_t fWaits;
+ 	uint32_t fSurfaces;
+ };
+ 
+@@ -396,6 +559,7 @@ VinceGPUUserClient::initWithTask(task_t owningTask, void *securityID, UInt32 typ
+ 	fNextBuffer = 0;
+ 	fNextQueue = 0;
+ 	fSubmits = 0;
++	fWaits = 0;
+ 	fSurfaces = 0;
+ 	fBuffers = (struct gpu_buffer *)IOMallocZero(sizeof(struct gpu_buffer) * GPU_BUFFERS);
+ 	return fBuffers != NULL;
+@@ -460,7 +624,7 @@ VinceGPUUserClient::gemNew(struct msm_gem_new *request)
+ 	uint64_t address;
+ 	uint8_t *kernel;
+ 	struct gpu_buffer *b = NULL;
+-	IOBufferMemoryDescriptor *memory;
++	IOMemoryDescriptor *memory;
+ 	uint32_t cache = request->flags & MSM_BO_CACHE_MASK;
+ 
+ 	request->handle = 0;
+@@ -470,7 +634,7 @@ VinceGPUUserClient::gemNew(struct msm_gem_new *request)
+ 		return kIOReturnBadArgument;
+ 	}
+ 	size = round_page_64(request->size);
+-	memory = gpuAllocate(size, &kernel, &address);
++	memory = gpuGemAllocate(size, &kernel, &address);
+ 	if (memory == NULL) {
+ 		return kIOReturnNoMemory;
+ 	}
+@@ -711,7 +875,7 @@ VinceGPUUserClient::clientMemoryForType(UInt32 type, IOOptionBits *options, IOMe
+ 	if (b != NULL && b->memory != NULL) {
+ 		b->memory->retain();
+ 		*memory = b->memory;
+-		*options = 0;
++		*options = kIOMapWriteCombineCache;
+ 		ret = kIOReturnSuccess;
+ 	}
+ 	IOLockUnlock(gGPULock);
+@@ -820,6 +984,12 @@ VinceGPUUserClient::externalMethod(uint32_t selector, IOExternalMethodArguments
+ 		patience = millisecondsUntil(&r.waitFence.timeout);
+ 		if (!gpuWait(r.waitFence.fence, patience)) {
+ 			ret = kIOReturnTimeout;
++		} else {
++			IOLockLock(gGPULock);
++			if (fWaits++ < 4) {
++				IOLog("VinceGPU: completed fence=%u\n", r.waitFence.fence);
++			}
++			IOLockUnlock(gGPULock);
+ 		}
+ 		break;
+ 	case kMsmGemMadvise:

@@ -145,6 +145,20 @@ int main() {
     assert(quad((uint8_t *)output->getBytesNoCopy(), 8) && output->prepared == 0);
     a.structureOutputDescriptor = nullptr; output->release();
 
+    // A static read-only client image must wrap successfully without a writable alias.
+    clientReadOnly = true;
+    a.structureInput = image; a.structureInputSize = sizeof(image);
+    put32(image, 8, 13);
+    assert(call(c, 6, a) == 0);
+    uint32_t ro = word(result, 0x18);
+    auto staticImage = sweet_surface_copy(ro);
+    assert(staticImage->readOnly && staticImage->memory->readOnly);
+    assert(staticImage->kernelAddress() == clientBase);
+    assert(c->trapLock((void *)(uintptr_t)ro, nullptr, nullptr, nullptr, nullptr, nullptr) == kIOReturnNotWritable);
+    assert(c->trapLock((void *)(uintptr_t)ro, (void *)1, nullptr, nullptr, nullptr, nullptr) == 0);
+    staticImage->release();
+    clientReadOnly = false;
+
     // Selector 7 has the same valid-state contract for a byte range.
     scalar[0] = clientBase + 51; scalar[1] = 130;
     a.scalarInputCount = 2;
