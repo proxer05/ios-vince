@@ -1,6 +1,6 @@
 # Daisy Adreno 506 bring-up
 
-## Current status — 2026-10-30
+## Current status — 2026-10-31
 
 The user considers touch sufficient for navigation and has asked to focus on
 GPU acceleration. Preserve `artifacts/daisy-touch-hid-0194-smp/daisy-boot.img`
@@ -28,10 +28,12 @@ reached the lockscreen.
 The imported `0181-vince-adreno-506-bringup.patch` contains the hardware
 startup steps and the `VinceGPU` IOKit command-submission service. Its
 `gpu=1` selector requests all eleven steps; `adreno=N` stops after step N.
-Both are opt-in. The current gap is the rendering path: the GPU userland
-stack builds in CI but only the injectors are deployed. Patch 0195 adds
-contiguous GEM and cache/fence handling; IOSurface selector `0x7e` and
-end-to-end Mesa rendering are still pending.
+Both are opt-in. The full GPU userland stack is deployed and verified.
+The 0197 hardware boot loads the injector/EAGL bridge and creates Mesa
+25.0.7 contexts reporting `FD506 / OpenGL ES 3.1`. It stays black because
+backboardd rejects `b3a8` render targets and crashes on an invalid wrapped
+IOSurface; later large contiguous allocations fail. No draw submissions or
+GPU surface imports were logged. See [0197 black-screen diagnosis](#0197-black-screen-diagnosis--2026-10-31).
 
 ## Recovery evidence
 
@@ -415,13 +417,77 @@ at `bb13d17`, including those linked-kernel checks:
   ADT properties match 0195 except the fresh random seed. Rebuilding this
   configuration requires `VINCE_NO_FBCON=1`.
 
-The image is ready for temporary boot; it has not yet been tested on the
-phone. Hardware rendering validation remains pending.
+The image was temporarily booted and stayed black; see the diagnosis below.
+Hardware rendering validation remains pending.
 
 ```sh
 fastboot -s 6790a29e0305 boot artifacts/daisy-gpu-userland-0197/daisy-boot.img
 ```
 
-The next recovered log should show the backboardd dyld-policy reply, then
-injector/EAGL startup, the GPU user-client open, and Mesa submissions. A
-successful 0195-style memory self-test alone does not validate rendering.
+The recovered log shows the backboardd dyld-policy reply, injector/EAGL
+startup, and GPU user-client opens, but no Mesa submissions. A successful
+0195-style memory self-test alone does not validate rendering.
+
+## 0197 black-screen diagnosis — 2026-10-31
+
+The user reported no logo or display after more than five minutes. The phone
+was in fastboot when inspected. Temporarily booted the existing TWRP image
+and recovered the persistent console and unified logs:
+
+- `artifacts/console-gpu-userland-0197-20261031.log`: 553,322 bytes, SHA-256
+  `09dd4d6002c5b5abd44f79da70ed6164389e85946b96e0a44a98c768d9fb4341`.
+- `artifacts/gpu-userland-0197-logs-20261031/parsed/unified.jsonl`:
+  812,584 messages, zero unresolved strings. Filter by boot UUID
+  `4FAA21F2898749C08DBC62A2CC884C15` for the 31,516 new-boot messages;
+  the other 781,068 belong to the earlier 0195 boot. New-boot recorded
+  timestamps span `2026-10-31T00:29:04.252886272Z` through
+  `2026-10-31T00:29:59.728189440Z`.
+
+The console establishes this sequence:
+
+1. The GPU memory self-test passes at `0xa3ff4000` (line 173), followed by
+   accelerator and GPU service registration. AMFI answers backboardd with
+   `flags=0xff error=0` (line 684); the old policy-not-found error is absent
+   from the new boot's unified messages.
+2. The deployed injector loads the GL bridge, which replaces all seven
+   EAGL methods. Mesa opens the GPU user client and reports
+   `OpenGL ES 3.1 Mesa 25.0.7; FD506` (line 1101).
+3. Backboardd creates a 1125x2436, two-plane `b3a8` surface (line 1142).
+   `userland/gpu/eagl.c:my_attachImage` accepts only non-planar BGRA/format-0
+   targets with four bytes per element. It refuses this surface, followed
+   by `glDrawElements: error 0x506` (`GL_INVALID_FRAMEBUFFER_OPERATION`).
+4. IOSurface selector 6 is called (line 1189), then backboardd faults at
+   `0x30` in `_platform_memmove`, called by
+   `IOSurfaceClientGetBulkAttachments` (lines 1190–1195). Selector 6 is
+   `IOSurfaceWrapClientImage`; Daisy has no handler and its default branch
+   reports success with a zero-filled result, including the shared-state
+   pointer. This explains the null-base attachment read. Merely storing
+   selector-27 attachments does not repair that invalid surface result.
+5. Five backboardd instances crash with the same fault (PIDs 57, 104, 112,
+   136, 169). The sixth creates a Mesa context but cannot allocate the
+   13,881,344-byte contiguous target. The console records 93 such allocation
+   failures; unified logs confirm `CAIOSurfaceCreate: failed to allocate
+   IOSurface (size: 1125 x 2436, format: b3a8)`.
+
+There is no recorded kernel panic, GPU draw submission, or imported GPU
+surface in this log. The framebuffer receives `display on`; that does not
+establish that a frame reached the panel.
+
+Remaining port work identified by these logs:
+
+- Adapt Hakios's owned-surface `b3a8`/10-bit-to-BGRA normalization, including
+  dropping the separate alpha plane and reporting the actual geometry.
+- Implement valid client-memory surfaces (selectors 6/7 and
+  `IOSurfaceAddress`) with retained mappings and a real shared-state page.
+  Unsupported creation calls must return an error rather than fabricated
+  success. Current Hakios rejects unimplemented selectors; Topaz patches
+  0132/0134 provide the SweetSurface wrapping reference.
+- Port attachment/value state (Hakios and Topaz 0133); keep wrapped cached
+  memory on the copy path because Daisy's GPU import requires DMA32/WC.
+- Add an ordinary-memory surface fallback when contiguous allocation fails,
+  and investigate the repeated large-allocation failures before enabling
+  zero-copy presentation. Mesa's existing import rejection/copy path can
+  handle non-importable surfaces.
+
+The device was left in TWRP after extraction. The navigable 0194 SMP image
+remains the recovery baseline.
