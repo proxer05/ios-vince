@@ -20,7 +20,9 @@ static void cleanup() {
     gPoolCount = gPoolPeak = gPoolMisses = 0;
 }
 
-int main() {
+static void exercise() {
+    poolMB = 0;
+    failPhysicalAt = 0;
     // Without the boot argument, use the original allocator.
     gpuPoolInit(); assert(gPoolCount == 0 && !gPoolLock);
     auto ordinary = allocate(PAGE_SIZE); assert(ordinary); ordinary->release();
@@ -68,5 +70,12 @@ int main() {
     poolMB = 96; failPhysicalAt = physicalCalls + 2; gpuPoolInit(); assert(gPoolCount == 1);
     calls = physicalCalls;
     a = allocate(target); assert(a && physicalCalls == calls); a->release(); cleanup();
-    puts("PASS: GEM pool DMA32/WC, 111 target reuses, fragmentation, zero-fill, mapping lifetime, failure cleanup");
+    printf("PASS (%u-byte runtime pages): GEM pool DMA32/WC, 111 target reuses, fragmentation, zero-fill, mapping lifetime, failure cleanup\n", PAGE_SIZE);
+}
+
+int main() {
+    for (auto size : {4096u, 16384u}) {
+        vm_page_size = size;
+        exercise();
+    }
 }

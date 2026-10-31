@@ -13,7 +13,9 @@
 #define OSTypeAlloc(t) new t{}
 #define OSSafeReleaseNULL(p) do { if (p) { (p)->release(); (p) = nullptr; } } while (0)
 #define IOLog(...) ((void)0)
-#define PAGE_SIZE 4096u
+#define PAGE_MIN_SIZE 4096u
+static unsigned vm_page_size = PAGE_MIN_SIZE;
+#define PAGE_SIZE vm_page_size
 #define PAGE_MASK (PAGE_SIZE - 1)
 #define GPU_BUFFER_MAX (256ull << 20)
 #define GPU_ADDRESS_LIMIT 0x100000000ull
@@ -74,6 +76,7 @@ public:
         if (++physicalCalls == failPhysicalAt) return nullptr;
         auto p = new IOBufferMemoryDescriptor;
         assert(posix_memalign(&p->data, PAGE_SIZE, size) == 0);
+        nextPA = (nextPA + PAGE_MASK) & ~(uint64_t)PAGE_MASK;
         p->size = size; p->pa = nextPA; nextPA += size; return p;
     }
     void *getBytesNoCopy() { return data; }

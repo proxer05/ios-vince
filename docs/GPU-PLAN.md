@@ -639,3 +639,9 @@ including 111 repeated 12 MiB targets, fragmentation/coalescing, zero-fill,
 mapping lifetime, descriptor failures and partial reserve initialization.
 Real WC mapping, early reservation capacity and rendering performance
 still require the VINCE build and a phone test.
+
+The first build ([41155422508](https://github.com/proxer05/ios-vince/actions/runs/41155422508))
+caught a compile-time bitmap bound using XNU's runtime `PAGE_SIZE`. The
+bitmap now uses `PAGE_MIN_SIZE` for its static capacity, while allocations
+still follow the actual page size. The pool test now passes with both
+4 KiB and 16 KiB runtime pages under ASan/UBSan.

@@ -75,10 +75,10 @@ index 6a3ceec..ef50ac6 100644
  	uint32_t gpuFence;                     /* latest GPU access; protected by gGPULock */
  #endif
 diff --git a/iokit/Kernel/arm/VinceGPU.cpp b/iokit/Kernel/arm/VinceGPU.cpp
-index 5e0e536..19fe7dc 100755
+index 5e0e536..8cbb586 100755
 --- a/iokit/Kernel/arm/VinceGPU.cpp
 +++ b/iokit/Kernel/arm/VinceGPU.cpp
-@@ -232,6 +232,167 @@ gpuAllocate(uint64_t size, uint8_t **kernel, uint64_t *address)
+@@ -232,6 +232,169 @@ gpuAllocate(uint64_t size, uint8_t **kernel, uint64_t *address)
  	return memory;
  }
  
@@ -93,7 +93,9 @@ index 5e0e536..19fe7dc 100755
 +	IOBufferMemoryDescriptor *memory;
 +	uint8_t *kernel;
 +	uint64_t address;
-+	uint64_t used[GPU_POOL_PAGES / 64];
++	/* PAGE_SIZE is a runtime variable in XNU's ARM kernel. Reserve enough
++	 * bits for its smallest supported page, then index using PAGE_SIZE. */
++	uint64_t used[GPU_POOL_CHUNK / PAGE_MIN_SIZE / 64];
 +};
 +static struct gpu_pool_chunk gPool[GPU_POOL_CHUNKS];
 +static IOLock *gPoolLock;
@@ -246,7 +248,7 @@ index 5e0e536..19fe7dc 100755
  IOBufferMemoryDescriptor *
  vince_surface_allocate(uint32_t size)
  {
-@@ -249,7 +410,7 @@ gpuMemoryTest(void)
+@@ -249,7 +412,7 @@ gpuMemoryTest(void)
  	uint8_t *kernel;
  	uint64_t address;
  	const uint32_t size = 4 * PAGE_SIZE;
@@ -255,7 +257,7 @@ index 5e0e536..19fe7dc 100755
  	if (memory == NULL) {
  		return false;
  	}
-@@ -307,6 +468,7 @@ VinceGPU::start(IOService *provider)
+@@ -307,6 +470,7 @@ VinceGPU::start(IOService *provider)
  		return false;
  	}
  	int test = 0;
@@ -263,7 +265,7 @@ index 5e0e536..19fe7dc 100755
  	PE_parse_boot_argn("daisygpu_test", &test, sizeof(test));
  	if (test && !gpuMemoryTest()) {
  		IOLog("VinceGPU: memory test failed; service not registered\n");
-@@ -381,6 +543,7 @@ private:
+@@ -381,6 +545,7 @@ private:
  	uint32_t fNextBuffer;
  	uint32_t fNextQueue;
  	uint32_t fSubmits;
@@ -271,7 +273,7 @@ index 5e0e536..19fe7dc 100755
  	uint32_t fSurfaces;
  };
  
-@@ -396,6 +559,7 @@ VinceGPUUserClient::initWithTask(task_t owningTask, void *securityID, UInt32 typ
+@@ -396,6 +561,7 @@ VinceGPUUserClient::initWithTask(task_t owningTask, void *securityID, UInt32 typ
  	fNextBuffer = 0;
  	fNextQueue = 0;
  	fSubmits = 0;
@@ -279,7 +281,7 @@ index 5e0e536..19fe7dc 100755
  	fSurfaces = 0;
  	fBuffers = (struct gpu_buffer *)IOMallocZero(sizeof(struct gpu_buffer) * GPU_BUFFERS);
  	return fBuffers != NULL;
-@@ -460,7 +624,7 @@ VinceGPUUserClient::gemNew(struct msm_gem_new *request)
+@@ -460,7 +626,7 @@ VinceGPUUserClient::gemNew(struct msm_gem_new *request)
  	uint64_t address;
  	uint8_t *kernel;
  	struct gpu_buffer *b = NULL;
@@ -288,7 +290,7 @@ index 5e0e536..19fe7dc 100755
  	uint32_t cache = request->flags & MSM_BO_CACHE_MASK;
  
  	request->handle = 0;
-@@ -470,7 +634,7 @@ VinceGPUUserClient::gemNew(struct msm_gem_new *request)
+@@ -470,7 +636,7 @@ VinceGPUUserClient::gemNew(struct msm_gem_new *request)
  		return kIOReturnBadArgument;
  	}
  	size = round_page_64(request->size);
@@ -297,7 +299,7 @@ index 5e0e536..19fe7dc 100755
  	if (memory == NULL) {
  		return kIOReturnNoMemory;
  	}
-@@ -711,7 +875,7 @@ VinceGPUUserClient::clientMemoryForType(UInt32 type, IOOptionBits *options, IOMe
+@@ -711,7 +877,7 @@ VinceGPUUserClient::clientMemoryForType(UInt32 type, IOOptionBits *options, IOMe
  	if (b != NULL && b->memory != NULL) {
  		b->memory->retain();
  		*memory = b->memory;
@@ -306,7 +308,7 @@ index 5e0e536..19fe7dc 100755
  		ret = kIOReturnSuccess;
  	}
  	IOLockUnlock(gGPULock);
-@@ -820,6 +984,12 @@ VinceGPUUserClient::externalMethod(uint32_t selector, IOExternalMethodArguments
+@@ -820,6 +986,12 @@ VinceGPUUserClient::externalMethod(uint32_t selector, IOExternalMethodArguments
  		patience = millisecondsUntil(&r.waitFence.timeout);
  		if (!gpuWait(r.waitFence.fence, patience)) {
  			ret = kIOReturnTimeout;
